@@ -16,6 +16,7 @@ This document provides a complete reference of all data fields available in the 
 - [Routing](#routing)
 - [Users and Groups](#users-and-groups)
 - [Certificates](#certificates)
+- [Analysis and Findings](#analysis-and-findings)
 
 ---
 
@@ -23,40 +24,41 @@ This document provides a complete reference of all data fields available in the 
 
 The root export object representing a normalized device configuration.
 
-| Field              | Type                     | JSON Key           | Description                                    |
-| ------------------ | ------------------------ | ------------------ | ---------------------------------------------- |
-| `DeviceType`       | `string`                 | `device_type`      | Platform identifier (e.g., "opnsense")         |
-| `Version`          | `string`                 | `version`          | Firmware/configuration version                 |
-| `Theme`            | `string`                 | `theme`            | Web GUI theme name                             |
-| `System`           | `System`                 | `system`           | System-level settings                          |
-| `Interfaces`       | `[]Interface`            | `interfaces`       | Network interface configurations (flat array)  |
-| `VLANs`            | `[]VLAN`                 | `vlans`            | VLAN configurations                            |
-| `Bridges`          | `[]Bridge`               | `bridges`          | Network bridge configurations                  |
-| `PPPs`             | `[]PPP`                  | `ppps`             | PPP connection configurations                  |
-| `GIFs`             | `[]GIF`                  | `gifs`             | GIF tunnel configurations                      |
-| `GREs`             | `[]GRE`                  | `gres`             | GRE tunnel configurations                      |
-| `LAGGs`            | `[]LAGG`                 | `laggs`            | Link aggregation configurations                |
-| `VirtualIPs`       | `[]VirtualIP`            | `virtualIps`       | CARP, IP alias, and proxy ARP configurations   |
-| `InterfaceGroups`  | `[]InterfaceGroup`       | `interfaceGroups`  | Logical interface group configurations         |
-| `FirewallRules`    | `[]FirewallRule`         | `firewallRules`    | Normalized firewall filter rules               |
-| `NAT`              | `NATConfig`              | `nat`              | NAT configuration (inbound and outbound)       |
-| `DHCP`             | `[]DHCPScope`            | `dhcp`             | DHCP server scopes, one per interface          |
-| `DNS`              | `DNSConfig`              | `dns`              | DNS resolver and forwarder configuration       |
-| `NTP`              | `NTPConfig`              | `ntp`              | NTP time synchronization settings              |
-| `SNMP`             | `SNMPConfig`             | `snmp`             | SNMP service configuration                     |
-| `LoadBalancer`     | `LoadBalancerConfig`     | `loadBalancer`     | Load balancer and health monitor configuration |
-| `VPN`              | `VPN`                    | `vpn`              | VPN subsystem configurations                   |
-| `Routing`          | `Routing`                | `routing`          | Gateways, gateway groups, and static routes    |
-| `Certificates`     | `[]Certificate`          | `certificates`     | TLS/SSL certificates                           |
-| `CAs`              | `[]CertificateAuthority` | `cas`              | Certificate authorities                        |
-| `HighAvailability` | `HighAvailability`       | `highAvailability` | CARP/pfsync HA settings                        |
-| `IDS`              | `*IDSConfig`             | `ids`              | Intrusion detection/prevention configuration   |
-| `Syslog`           | `SyslogConfig`           | `syslog`           | Remote syslog forwarding configuration         |
-| `Users`            | `[]User`                 | `users`            | System user accounts                           |
-| `Groups`           | `[]Group`                | `groups`           | System groups                                  |
-| `Sysctl`           | `[]SysctlItem`           | `sysctl`           | Kernel tunable parameters                      |
-| `Packages`         | `[]Package`              | `packages`         | Installed software packages                    |
-| `Revision`         | `Revision`               | `revision`         | Configuration revision metadata                |
+| Field              | Type                     | JSON Key           | Description                                                                                  |
+| ------------------ | ------------------------ | ------------------ | -------------------------------------------------------------------------------------------- |
+| `DeviceType`       | `string`                 | `device_type`      | Platform identifier (e.g., "opnsense")                                                       |
+| `Version`          | `string`                 | `version`          | Firmware/configuration version                                                               |
+| `Theme`            | `string`                 | `theme`            | Web GUI theme name                                                                           |
+| `System`           | `System`                 | `system`           | System-level settings                                                                        |
+| `Interfaces`       | `[]Interface`            | `interfaces`       | Network interface configurations (flat array)                                                |
+| `VLANs`            | `[]VLAN`                 | `vlans`            | VLAN configurations                                                                          |
+| `Bridges`          | `[]Bridge`               | `bridges`          | Network bridge configurations                                                                |
+| `PPPs`             | `[]PPP`                  | `ppps`             | PPP connection configurations                                                                |
+| `GIFs`             | `[]GIF`                  | `gifs`             | GIF tunnel configurations                                                                    |
+| `GREs`             | `[]GRE`                  | `gres`             | GRE tunnel configurations                                                                    |
+| `LAGGs`            | `[]LAGG`                 | `laggs`            | Link aggregation configurations                                                              |
+| `VirtualIPs`       | `[]VirtualIP`            | `virtualIps`       | CARP, IP alias, and proxy ARP configurations                                                 |
+| `InterfaceGroups`  | `[]InterfaceGroup`       | `interfaceGroups`  | Logical interface group configurations                                                       |
+| `FirewallRules`    | `[]FirewallRule`         | `firewallRules`    | Normalized firewall filter rules                                                             |
+| `NAT`              | `NATConfig`              | `nat`              | NAT configuration (inbound and outbound)                                                     |
+| `DHCP`             | `[]DHCPScope`            | `dhcp`             | DHCP server scopes, one per interface                                                        |
+| `DNS`              | `DNSConfig`              | `dns`              | DNS resolver and forwarder configuration                                                     |
+| `NTP`              | `NTPConfig`              | `ntp`              | NTP time synchronization settings                                                            |
+| `SNMP`             | `SNMPConfig`             | `snmp`             | SNMP service configuration                                                                   |
+| `LoadBalancer`     | `LoadBalancerConfig`     | `loadBalancer`     | Load balancer and health monitor configuration                                               |
+| `VPN`              | `VPN`                    | `vpn`              | VPN subsystem configurations                                                                 |
+| `Routing`          | `Routing`                | `routing`          | Gateways, gateway groups, and static routes                                                  |
+| `Certificates`     | `[]Certificate`          | `certificates`     | TLS/SSL certificates                                                                         |
+| `CAs`              | `[]CertificateAuthority` | `cas`              | Certificate authorities                                                                      |
+| `HighAvailability` | `HighAvailability`       | `highAvailability` | CARP/pfsync HA settings                                                                      |
+| `IDS`              | `*IDSConfig`             | `ids`              | Intrusion detection/prevention configuration                                                 |
+| `Syslog`           | `SyslogConfig`           | `syslog`           | Remote syslog forwarding configuration                                                       |
+| `Users`            | `[]User`                 | `users`            | System user accounts                                                                         |
+| `Groups`           | `[]Group`                | `groups`           | System groups                                                                                |
+| `Sysctl`           | `[]SysctlItem`           | `sysctl`           | Kernel tunable parameters                                                                    |
+| `Packages`         | `[]Package`              | `packages`         | Installed software packages                                                                  |
+| `Revision`         | `Revision`               | `revision`         | Configuration revision metadata                                                              |
+| `NamedObjects`     | `NamedObjects`           | `namedObjects`     | Registry of named objects (firewall aliases), keyed by name; absent when the device has none |
 
 **Enrichment fields** (populated during export, not present in raw parse):
 
@@ -66,7 +68,7 @@ The root export object representing a normalized device configuration.
 | `Analysis`           | `*Analysis`           | `analysis`           | Analysis findings and insights                    |
 | `SecurityAssessment` | `*SecurityAssessment` | `securityAssessment` | Security scores and recommendations               |
 | `PerformanceMetrics` | `*PerformanceMetrics` | `performanceMetrics` | Performance-related metrics                       |
-| `ComplianceChecks`   | `*ComplianceResults`  | `complianceChecks`   | Compliance audit results from plugin-based checks |
+| `ComplianceResults`  | `*ComplianceResults`  | `complianceResults`  | Compliance audit results from plugin-based checks |
 
 ---
 
@@ -202,11 +204,47 @@ Firewall rules are normalized with clean boolean types and resolved endpoint add
 
 Used for both `source` and `destination` in firewall and NAT rules.
 
-| Field     | Type     | JSON Key  | Description                              |
-| --------- | -------- | --------- | ---------------------------------------- |
-| `Address` | `string` | `address` | Resolved address ("any", CIDR, hostname) |
-| `Port`    | `string` | `port`    | Port or port range                       |
-| `Negated` | `bool`   | `negated` | Inverted match (NOT logic)               |
+| Field        | Type         | JSON Key     | Description                                                                                 |
+| ------------ | ------------ | ------------ | ------------------------------------------------------------------------------------------- |
+| `Address`    | `string`     | `address`    | Resolved address ("any", CIDR, hostname)                                                    |
+| `Port`       | `string`     | `port`       | Port or port range                                                                          |
+| `Negated`    | `bool`       | `negated`    | Inverted match (NOT logic)                                                                  |
+| `AddressRef` | `*ObjectRef` | `addressRef` | Present when `Address` was expressed as a firewall alias; names the entry in `namedObjects` |
+| `PortRef`    | `*ObjectRef` | `portRef`    | Present when `Port` was expressed as a firewall alias; names the entry in `namedObjects`    |
+
+### NamedObject and ObjectRef (firewall aliases)
+
+OPNsense and pfSense firewall aliases (host, network, port, and dynamic url/geoip/external tables) are exposed via the device-level `namedObjects` registry rather than a separate per-vendor table. A rule endpoint keeps its already-resolved inline `Address`/`Port` value and additionally carries an `AddressRef`/`PortRef` when that value originated from an alias, so existing consumers that only read the inline value are unaffected.
+
+| Field         | Type       | JSON Key                          | Description                                                                                  |
+| ------------- | ---------- | --------------------------------- | -------------------------------------------------------------------------------------------- |
+| `Name`        | `string`   | `namedObjects.<name>.name`        | Alias name; matches the registry key                                                         |
+| `Type`        | `string`   | `namedObjects.<name>.type`        | `host`, `network`, `port`, `url`, `geoip`, or `external`                                     |
+| `Members`     | `[]string` | `namedObjects.<name>.members`     | Raw member values (literal addresses/ports, or nested alias names); opaque for dynamic types |
+| `Description` | `string`   | `namedObjects.<name>.description` | Human-readable alias description, when present                                               |
+
+`ObjectRef` (used by `AddressRef`/`PortRef` above) is a single-field pointer keyed into `namedObjects`:
+
+| Field  | Type     | JSON Key | Description                                              |
+| ------ | -------- | -------- | -------------------------------------------------------- |
+| `Name` | `string` | `name`   | The referenced object's name, keying into `namedObjects` |
+
+Dynamic object types (`url`, `geoip`, `external`) are never expanded — their `Members` are recorded as-is and are not resolved into a flattened address/port set.
+
+#### Alias references beyond rule endpoints
+
+`AddressRef`/`PortRef` on rule endpoints are not the only alias references. Every field on which a pf-family alias can legitimately appear carries an `*ObjectRef` so downstream referential-integrity analysis (unused-object detection) sees a complete reference set:
+
+- **NAT translation targets** — `NATRule` carries `targetRef`/`sourcePortRef`/`natPortRef`; `InboundNATRule` carries `internalIpRef`/`internalPortRef`/`externalPortRef`/`localPortRef`.
+- **Firewall redirect target** — `FirewallRule.targetRef`.
+- **Static route** — `StaticRoute.networkRef`.
+- **OpenVPN local/remote networks** — `localNetworkRef`/`remoteNetworkRef` and their V6 variants on `OpenVPNServer`/`OpenVPNCSC`. Populated for pfSense only; OPNsense does not support aliases here (upstream feature request open).
+
+Each ref is `nil` when the field held a literal value, so alias-free configs serialize unchanged.
+
+#### Unused objects (`analysis.unusedObjects`)
+
+The `analysis.unusedObjects` array lists named objects defined in the config but not referenced by any policy — computed as graph reachability from the ref sites above. Each finding carries `name`, `type`, `memberCount`, `description`, `severity`, and a hedged `recommendation` ("confirm before removing"). A disabled rule referencing an alias counts as a reference (the alias is staged, not dead).
 
 ---
 
@@ -266,7 +304,8 @@ DHCP scopes are a flat array with one entry per interface.
 | `Enabled`      | `bool`              | `dhcp[].enabled`      | DHCP server active on interface |
 | `Range`        | `DHCPRange`         | `dhcp[].range`        | Address pool range              |
 | `Gateway`      | `string`            | `dhcp[].gateway`      | Default gateway for clients     |
-| `DNSServer`    | `string`            | `dhcp[].dnsServer`    | DNS server for clients          |
+| `DNSServer`    | `string`            | `dhcp[].dnsServer`    | First DNS server (deprecated)   |
+| `DNSServers`   | `[]string`          | `dhcp[].dnsServers`   | DNS servers for clients         |
 | `NTPServer`    | `string`            | `dhcp[].ntpServer`    | NTP server for clients          |
 | `WINSServer`   | `string`            | `dhcp[].winsServer`   | WINS server for clients         |
 | `StaticLeases` | `[]DHCPStaticLease` | `dhcp[].staticLeases` | Fixed MAC-to-IP mappings        |
@@ -460,3 +499,54 @@ Users and groups are **top-level arrays**, not nested under `system`.
 | `Certificate` | `string` | `cas[].certificate` | PEM-encoded CA certificate     |
 | `PrivateKey`  | `string` | `cas[].privateKey`  | PEM-encoded CA private key     |
 | `Serial`      | `string` | `cas[].serial`      | Next certificate serial number |
+
+---
+
+## Analysis and Findings
+
+The `analysis` enrichment field (`Analysis`, `*Analysis`) is populated during export, not present in the raw parse. It carries the output of opnDossier's shared detection engine (`internal/analysis`).
+
+### Analysis
+
+| Field               | Type                       | JSON Key                     | Description                                                                                                                                                      |
+| ------------------- | -------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DeadRules`         | `[]DeadRuleFinding`        | `analysis.deadRules`         | **Deprecated.** See [DeadRuleFinding (deprecated)](#deadrulefinding-deprecated) below.                                                                           |
+| `UnusedInterfaces`  | `[]UnusedInterfaceFinding` | `analysis.unusedInterfaces`  | Interfaces with no associated rules or services                                                                                                                  |
+| `SecurityIssues`    | `[]SecurityFinding`        | `analysis.securityIssues`    | Detected security configuration issues                                                                                                                           |
+| `PerformanceIssues` | `[]PerformanceFinding`     | `analysis.performanceIssues` | Detected performance configuration issues                                                                                                                        |
+| `ConsistencyIssues` | `[]ConsistencyFinding`     | `analysis.consistencyIssues` | Detected configuration consistency issues                                                                                                                        |
+| `ShadowedRules`     | `[]ShadowedRuleFinding`    | `analysis.shadowedRules`     | Firewall rules — or traffic subsets of rules — that never take effect because a higher-precedence rule already covers them. The richer successor to `deadRules`. |
+
+### ShadowedRuleFinding
+
+Reported by `internal/analysis.DetectShadowedRules`, which models pf/OPNsense/pfSense rule-evaluation semantics directly (quick rules first-match, non-quick rules last-match, unscoped floating rules evaluated device-wide before interface rules).
+
+| Field             | Type     | JSON Key                                   | Description                                                                                                                                             |
+| ----------------- | -------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Kind`            | `string` | `analysis.shadowedRules[].kind`            | `full` (the entire rule is shadowed) or `partial` (only a traffic subset is eclipsed)                                                                   |
+| `ImpactClass`     | `string` | `analysis.shadowedRules[].impactClass`     | `security` (a pass rule defeats a deny), `troubleshooting` (a deny defeats a pass, or ambiguous overlap), or `hygiene` (redundant same-action coverage) |
+| `Severity`        | `string` | `analysis.shadowedRules[].severity`        | `critical`, `high`, `medium`, or `low` — combines impact class and reachability (WAN exposure escalates)                                                |
+| `Confidence`      | `string` | `analysis.shadowedRules[].confidence`      | `high`, or `low` for the unresolved-alias advisory case (see below)                                                                                     |
+| `RuleIndex`       | `int`    | `analysis.shadowedRules[].ruleIndex`       | Position of the shadowed (loser) rule in `firewallRules`                                                                                                |
+| `ShadowedByIndex` | `int`    | `analysis.shadowedRules[].shadowedByIndex` | Position of the covering (winner) rule in `firewallRules`                                                                                               |
+| `Interface`       | `string` | `analysis.shadowedRules[].interface`       | Interface the shadow was detected on                                                                                                                    |
+| `Direction`       | `string` | `analysis.shadowedRules[].direction`       | Evaluation direction bucket (`in` or `out`) the shadow was resolved under                                                                               |
+| `Port`            | `string` | `analysis.shadowedRules[].port`            | Eclipsed port subset, populated for partial shadows only                                                                                                |
+| `Description`     | `string` | `analysis.shadowedRules[].description`     | Human-readable summary of the shadow. Advisory findings (unresolved alias) are prefixed with `(unconfirmed — unresolved alias)`.                        |
+| `Recommendation`  | `string` | `analysis.shadowedRules[].recommendation`  | Suggested corrective action                                                                                                                             |
+
+### DeadRuleFinding (deprecated)
+
+> **Deprecated:** `deadRules` remains populated for backward compatibility — it is a derived view covering only the unreachable-and-duplicate scenarios that shadow detection surfaces, re-projected into this narrower shape. The re-projection is not entry-for-entry: `duplicate` entries map one-to-one onto a `shadowedRules` entry, but `unreachable` entries are keyed by the block-all owner rule and have no corresponding `shadowedRules` entry (see **Correlation key** below). New integrations should read `shadowedRules` instead: it captures every full/partial shadow across all impact classes — not just the unreachable/duplicate cases — with richer classification (`impactClass`, `confidence`, the covering rule's index) that `deadRules` cannot express.
+>
+> **Correlation key:** this only holds for `duplicate` entries — `ruleIndex` there is the shadowed (loser) rule and corresponds to the `shadowedRules` entry with the same `ruleIndex`, so those two can be deduped safely. For `unreachable` entries, `ruleIndex` instead identifies the block-all rule causing the unreachability (the owner, not a shadowed rule) — it has no corresponding `shadowedRules` entry, so consumers must not blanket-dedup both collections on `ruleIndex`.
+>
+> **Removal:** `deadRules` will be removed no earlier than the next major version of opnDossier.
+
+| Field            | Type     | JSON Key                              | Description                                                                                                                                   |
+| ---------------- | -------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Kind`           | `string` | `analysis.deadRules[].kind`           | `unreachable` (the block-all owner rule that renders later rules unreachable) or `duplicate`                                                  |
+| `RuleIndex`      | `int`    | `analysis.deadRules[].ruleIndex`      | For `duplicate`, position of the shadowed (loser) rule in `firewallRules`; for `unreachable`, position of the block-all owner rule causing it |
+| `Interface`      | `string` | `analysis.deadRules[].interface`      | Interface the dead rule is bound to                                                                                                           |
+| `Description`    | `string` | `analysis.deadRules[].description`    | Summary of why the rule is considered dead                                                                                                    |
+| `Recommendation` | `string` | `analysis.deadRules[].recommendation` | Suggested corrective action                                                                                                                   |

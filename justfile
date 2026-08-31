@@ -56,7 +56,7 @@ alias i := install
 [group('setup')]
 install:
     @mise install
-    @{{ mise_exec }} pre-commit install --hook-type commit-msg
+    @{{ mise_exec }} pre-commit install --hook-type pre-commit --hook-type commit-msg
     @{{ mise_exec }} go mod tidy
 
 
@@ -66,7 +66,11 @@ setup: install
 
 # Update all dependencies
 [group('setup')]
-update-deps: _update-go _update-python _update-precommit
+update-deps: _update-mise _update-go _update-python _update-precommit
+
+[private]
+_update-mise:
+    @mise upgrade --bump --local --before 7d
 
 [private]
 _update-go:
@@ -139,12 +143,12 @@ check:
 # Apply Go modernization fixes
 [group('quality')]
 modernize:
-    @{{ mise_exec }} go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix -test ./...
+    @{{ mise_exec }} modernize -fix -test ./...
 
 # Check for modernization opportunities (dry-run)
 [group('quality')]
 modernize-check:
-    @{{ mise_exec }} go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -test ./...
+    @{{ mise_exec }} modernize -test ./...
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Testing
@@ -162,11 +166,16 @@ test:
 test-v:
     @{{ mise_exec }} go test -v ./...
 
-# Run tests with coverage report
+# Run tests with coverage report.
+# Covers BOTH default and integration suites — integration tests carry the
+# `//go:build integration` tag and are otherwise invisible to coverage, which
+# leaves cmd/audit.go and cmd/convert.go worker functions looking like 0%
+# despite being tested. -coverpkg=./... attributes cross-package coverage
+# (e.g. cmd tests exercising internal/ code) back to the package under test.
 [group('test')]
 test-coverage:
-    @{{ mise_exec }} go test -coverprofile=coverage.txt ./...
-    @{{ mise_exec }} go tool cover -func=coverage.txt
+    @{{ mise_exec }} go test -tags=integration -covermode=atomic -coverpkg=./... -coverprofile=coverage.txt ./...
+    @{{ mise_exec }} go tool cover -func=coverage.txt | tail -20
 
 # Run integration tests (build tag)
 [group('test')]
@@ -206,7 +215,21 @@ bench-mem:
 # Run comprehensive performance benchmarks
 [group('test')]
 bench-perf:
-    @{{ mise_exec }} go test -bench=. -run=^$ -benchtime=1s -count=3 ./internal/converter
+    @{{ mise_exec }} go test -bench=. -run=^$ -benchmem -benchtime=1s -count=3 ./internal/converter
+
+# Capture CPU and memory profiles for converter export/rendering benchmarks
+[group('test')]
+bench-profile:
+    @{{ mise_exec }} go test -bench='Benchmark(MarkdownConverter_ToMarkdown|JSONConverter_ToJSON|YAMLConverter_ToYAML)' -run=^$ -benchmem -cpuprofile=cpu.prof -memprofile=mem.prof ./internal/converter
+    @echo "Profiles written: cpu.prof, mem.prof"
+    @echo "Inspect with: mise exec -- go tool pprof cpu.prof"
+
+# Capture an execution trace for converter export/rendering benchmarks
+[group('test')]
+bench-trace:
+    @{{ mise_exec }} go test -bench='Benchmark(MarkdownConverter_ToMarkdown|JSONConverter_ToJSON|YAMLConverter_ToYAML)' -run=^$ -benchmem -trace=trace.out ./internal/converter
+    @echo "Trace written: trace.out"
+    @echo "Inspect with: mise exec -- go tool trace trace.out"
 
 # Save benchmark baseline for comparison
 [group('test')]
@@ -221,23 +244,28 @@ bench-compare:
         exit 1; \
     fi
     @{{ mise_exec }} go test -bench=. -run=^$ -benchmem -count=5 ./... 2>/dev/null | tee .benchmark-current.txt
-    @{{ mise_exec }} go install golang.org/x/perf/cmd/benchstat@latest
     @{{ mise_exec }} benchstat .benchmark-baseline.txt .benchmark-current.txt
-
-# Run startup time benchmarks
-[group('test')]
-bench-startup:
-    @{{ mise_exec }} go test -bench=BenchmarkStartup -run=^$ -benchmem ./cmd/...
 
 # Run pool benchmarks
 [group('test')]
 bench-pool:
     @{{ mise_exec }} go test -bench=. -run=^$ -benchmem ./internal/pool/...
 
+# Benchmarks are on-demand only: never in CI, never in ci-check. Shared runners
+# are too noisy for wall-clock numbers to mean anything.
+
+# Run the focused benchmark suite (converter, pool, logging)
+[group('test')]
+bench-focused:
+    @{{ mise_exec }} go test -bench=. -run='^$' -benchmem -count=1 -benchtime=1s -timeout 4m \
+        ./internal/converter/... \
+        ./internal/pool/... \
+        ./internal/logging/...
+
 # Run model completeness check
 [group('test')]
 completeness-check:
-    @{{ mise_exec }} go test -tags=completeness ./internal/model -run TestModelCompleteness
+    @{{ mise_exec }} go test -tags=completeness ./internal/testing/modeltest -run TestModelCompleteness
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Build
@@ -309,26 +337,32 @@ site: docs
 # Build documentation
 [group('docs')]
 docs-build:
-    @{{ mise_exec }} uv run mkdocs build
+    @{{ mise_exec }} uv run mkdocs build --strict
 
 # Build documentation with verbose output
 [group('docs')]
 docs-test:
-    @{{ mise_exec }} uv run mkdocs build --verbose
+    @{{ mise_exec }} uv run mkdocs build --verbose --strict
 
 # Generate model reference documentation
 [group('docs')]
-generate-docs:
+generate-docs: generate-cli-docs
     @{{ mise_exec }} go run tools/docgen/main.go
+
+# Generate markdown CLI reference from Cobra command tree
+# Output lands in docs/cli/ and is committed so mkdocs builds on a fresh clone.
+[group('docs')]
+generate-cli-docs:
+    @{{ mise_exec }} go run . docs docs/cli/
 
 # Regenerate VHS terminal demo GIFs from tape files
 [group('docs')]
 generate-demos:
     @echo "Building opnDossier binary for demos..."
-    @{{ mise_exec }} go build -o vhs/opnDossier .
+    @{{ mise_exec }} go build -o vhs/opndossier .
     @mkdir -p vhs/gif vhs/screenshots
     @set -e; \
-    trap 'rm -f vhs/opnDossier' EXIT; \
+    trap 'rm -f vhs/opndossier' EXIT; \
     for tape in vhs/*.tape; do \
         echo "Recording $tape..."; \
         env -i HOME="$HOME" PATH="$PATH" TERM="xterm-256color" vhs "$tape"; \
@@ -341,26 +375,19 @@ generate-demos:
 
 # Generate changelog
 [group('docs')]
-changelog: _require-git-cliff
+changelog:
     @{{ mise_exec }} git-cliff --output CHANGELOG.md
 
 # Generate changelog for a specific version
 [group('docs')]
-changelog-version version: _require-git-cliff
+changelog-version version:
     @{{ mise_exec }} git-cliff --tag {{ version }} --output CHANGELOG.md
 
 # Generate changelog for unreleased changes only
 [group('docs')]
-changelog-unreleased: _require-git-cliff
+changelog-unreleased:
     @{{ mise_exec }} git-cliff --unreleased --output CHANGELOG.md
 
-[private]
-_require-git-cliff:
-    #!/usr/bin/env bash
-    if ! command -v git-cliff >/dev/null 2>&1; then
-        echo "Error: git-cliff not found. Run 'just install' to install it."
-        exit 1
-    fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Security

@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"testing"
+	"time"
 
 	"github.com/EvilBit-Labs/opnDossier/internal/converter/builder"
 	"github.com/EvilBit-Labs/opnDossier/internal/logging"
+	"github.com/EvilBit-Labs/opnDossier/internal/testing/racedetect"
 	common "github.com/EvilBit-Labs/opnDossier/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -351,6 +354,12 @@ func TestHybridGenerator_GenerateToWriter_NilBuilder(t *testing.T) {
 // exercising the !ok path in GetBuilder's type assertion.
 type narrowOnlyBuilder struct{}
 
+// Compile-time assertion that narrowOnlyBuilder satisfies reportGenerator.
+// Makes the GOTCHAS §17.1/§17.2 three-way coupling (reportGenerator <-
+// ReportComposer <- narrowOnlyBuilder) explicit rather than relying on the
+// implicit assignment-site check in NewHybridGenerator.
+var _ reportGenerator = (*narrowOnlyBuilder)(nil)
+
 func (n *narrowOnlyBuilder) SetIncludeTunables(_ bool)                       {}
 func (n *narrowOnlyBuilder) SetFailuresOnly(_ bool)                          {}
 func (n *narrowOnlyBuilder) BuildAuditSection(_ *common.CommonDevice) string { return "" }
@@ -535,14 +544,20 @@ func TestHybridGenerator_Generate_RedactMarkdownFormats(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		format Format
-		redact bool
+		name       string
+		format     Format
+		redact     bool
+		wantMarker string
 	}{
-		{name: "markdown redacted", format: FormatMarkdown, redact: true},
+		// wantMarker differs by format because config-derived values are
+		// markdown-escaped on their way into the report. The redaction marker
+		// replaces such a value, so it carries the same escaping: raw markdown
+		// shows the backslashes, while HTML and text render "[REDACTED]"
+		// because a backslash-escaped bracket is a literal bracket.
+		{name: "markdown redacted", format: FormatMarkdown, redact: true, wantMarker: `\[REDACTED\]`},
 		{name: "markdown unredacted", format: FormatMarkdown, redact: false},
-		{name: "text redacted", format: FormatText, redact: true},
-		{name: "html redacted", format: FormatHTML, redact: true},
+		{name: "text redacted", format: FormatText, redact: true, wantMarker: "[REDACTED]"},
+		{name: "html redacted", format: FormatHTML, redact: true, wantMarker: "[REDACTED]"},
 	}
 
 	for _, tt := range tests {
@@ -563,7 +578,7 @@ func TestHybridGenerator_Generate_RedactMarkdownFormats(t *testing.T) {
 					"redacted output must not contain SNMP community string")
 				assert.NotContains(t, output, "ha-secret",
 					"redacted output must not contain HA password")
-				assert.Contains(t, output, "[REDACTED]",
+				assert.Contains(t, output, tt.wantMarker,
 					"redacted output must contain enrichment-layer redaction marker")
 			} else {
 				assert.Contains(t, output, "secret-community",
@@ -583,14 +598,20 @@ func TestHybridGenerator_GenerateToWriter_RedactMarkdownFormats(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		format Format
-		redact bool
+		name       string
+		format     Format
+		redact     bool
+		wantMarker string
 	}{
-		{name: "markdown redacted", format: FormatMarkdown, redact: true},
+		// wantMarker differs by format because config-derived values are
+		// markdown-escaped on their way into the report. The redaction marker
+		// replaces such a value, so it carries the same escaping: raw markdown
+		// shows the backslashes, while HTML and text render "[REDACTED]"
+		// because a backslash-escaped bracket is a literal bracket.
+		{name: "markdown redacted", format: FormatMarkdown, redact: true, wantMarker: `\[REDACTED\]`},
 		{name: "markdown unredacted", format: FormatMarkdown, redact: false},
-		{name: "text redacted", format: FormatText, redact: true},
-		{name: "html redacted", format: FormatHTML, redact: true},
+		{name: "text redacted", format: FormatText, redact: true, wantMarker: "[REDACTED]"},
+		{name: "html redacted", format: FormatHTML, redact: true, wantMarker: "[REDACTED]"},
 	}
 
 	for _, tt := range tests {
@@ -613,7 +634,7 @@ func TestHybridGenerator_GenerateToWriter_RedactMarkdownFormats(t *testing.T) {
 					"redacted output must not contain SNMP community string")
 				assert.NotContains(t, output, "ha-secret",
 					"redacted output must not contain HA password")
-				assert.Contains(t, output, "[REDACTED]",
+				assert.Contains(t, output, tt.wantMarker,
 					"redacted output must contain enrichment-layer redaction marker")
 			} else {
 				assert.Contains(t, output, "secret-community",
@@ -710,3 +731,104 @@ func TestHybridGenerator_GenerateToWriter_RedactJSONYAML(t *testing.T) {
 		})
 	}
 }
+
+// largeFixture returns a CommonDevice populated with n firewall rules.
+// Used to materially exercise the cancellation path: with n in the thousands,
+// an uninterruptible generation run takes noticeably longer than the timing
+// budget asserted below, so a false pass is not possible.
+func largeFixture(n int) *common.CommonDevice {
+	rules := make([]common.FirewallRule, 0, n)
+	for range n {
+		rules = append(rules, common.FirewallRule{
+			UUID:        "uuid-stub",
+			Type:        common.FirewallRuleType("pass"),
+			Description: "synthetic rule for cancellation test",
+			Protocol:    "tcp",
+		})
+	}
+	return &common.CommonDevice{
+		System:        common.System{Hostname: "cancel-test"},
+		FirewallRules: rules,
+	}
+}
+
+// TestHybridGenerator_Generate_RespectsCanceledContext verifies that
+// Generate aborts quickly when handed a pre-canceled ctx. A fast timing
+// bound also guards against regressions where ctx is dropped and the
+// generator runs to completion before returning an unrelated error.
+func TestHybridGenerator_Generate_RespectsCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	// Every public format should honor ctx — exercise all of them.
+	formats := []Format{FormatMarkdown, FormatJSON, FormatYAML, FormatText, FormatHTML}
+	for _, format := range formats {
+		t.Run(string(format), func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel() // pre-canceled
+
+			gen, err := NewHybridGenerator(builder.NewMarkdownBuilder(), nil)
+			require.NoError(t, err)
+
+			doc := largeFixture(10_000)
+			opts := DefaultOptions().WithFormat(format)
+
+			start := time.Now()
+			_, err = gen.Generate(ctx, doc, opts)
+			dur := time.Since(start)
+
+			require.ErrorIs(t, err, context.Canceled,
+				"pre-canceled ctx must surface as context.Canceled")
+			assert.Less(t, dur, cancelAbortBudget,
+				"cancellation must abort promptly, got %v", dur)
+		})
+	}
+}
+
+// TestHybridGenerator_GenerateToWriter_RespectsCanceledContext is the
+// streaming-path sibling of the test above.
+func TestHybridGenerator_GenerateToWriter_RespectsCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	formats := []Format{FormatMarkdown, FormatJSON, FormatYAML, FormatText, FormatHTML}
+	for _, format := range formats {
+		t.Run(string(format), func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel() // pre-canceled
+
+			gen, err := NewHybridGenerator(builder.NewMarkdownBuilder(), nil)
+			require.NoError(t, err)
+
+			doc := largeFixture(10_000)
+			opts := DefaultOptions().WithFormat(format)
+
+			start := time.Now()
+			err = gen.GenerateToWriter(ctx, io.Discard, doc, opts)
+			dur := time.Since(start)
+
+			require.ErrorIs(t, err, context.Canceled,
+				"pre-canceled ctx must surface as context.Canceled")
+			assert.Less(t, dur, cancelAbortBudget,
+				"cancellation must abort promptly, got %v", dur)
+		})
+	}
+}
+
+// cancelAbortBudget bounds how long Generate may take on a pre-canceled
+// context. The correctness assertion in these tests is the context.Canceled
+// error; this bound is the secondary guard that catches a regression where ctx
+// is dropped and the generator runs the whole document to completion.
+//
+// Race instrumentation multiplies the cost of the work being bounded, so the
+// budget is widened under -race. It stays far below the time a full 10,000
+// element generation takes, which is what the bound exists to distinguish.
+var cancelAbortBudget = func() time.Duration {
+	if racedetect.Enabled {
+		return 2 * time.Second
+	}
+
+	return 50 * time.Millisecond
+}()

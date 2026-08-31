@@ -3,6 +3,8 @@ package opnsense
 
 import (
 	"encoding/xml"
+	"maps"
+	"slices"
 )
 
 // InterfaceGroups represents interface groups configuration.
@@ -92,8 +94,9 @@ func (i *Interfaces) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 		return err
 	}
 
-	// Encode each interface as a separate element using the key as the element name
-	for key, iface := range i.Items {
+	// Encode interfaces in sorted key order for deterministic output (GOTCHAS §3.1).
+	for _, key := range slices.Sorted(maps.Keys(i.Items)) {
+		iface := i.Items[key]
 		ifaceStart := xml.StartElement{Name: xml.Name{Local: key}}
 		if err := e.EncodeElement(iface, ifaceStart); err != nil {
 			return err
@@ -133,12 +136,7 @@ func (i *Interfaces) Names() []string {
 		return []string{}
 	}
 
-	names := make([]string, 0, len(i.Items))
-	for key := range i.Items {
-		names = append(names, key)
-	}
-
-	return names
+	return slices.Sorted(maps.Keys(i.Items))
 }
 
 // Wan returns the WAN interface if it exists, otherwise returns a zero-value Interface and false.
@@ -153,7 +151,8 @@ func (i *Interfaces) Lan() (Interface, bool) {
 	return i.Get("lan")
 }
 
-// Interface represents a network interface configuration.
+// Interface represents a single network interface configuration, including IP addressing,
+// VLAN settings, gateway bindings, DHCP options, and advanced DHCPv6 fields.
 type Interface struct {
 	Enable              string       `xml:"enable,omitempty"              json:"enable,omitempty"              yaml:"enable,omitempty"`
 	If                  string       `xml:"if,omitempty"                  json:"if,omitempty"                  yaml:"if,omitempty"`
@@ -185,8 +184,10 @@ type Interface struct {
 	NumberOptions       []DhcpOption `xml:"numberoptions,omitempty"       json:"numberoptions,omitempty"       yaml:"numberoptions,omitempty"`
 	Range               DhcpRange    `xml:"range,omitempty"               json:"range"                         yaml:"range,omitempty"`
 	Winsserver          string       `xml:"winsserver,omitempty"          json:"winsserver,omitempty"          yaml:"winsserver,omitempty"`
-	Dnsserver           string       `xml:"dnsserver,omitempty"           json:"dnsserver,omitempty"           yaml:"dnsserver,omitempty"`
-	Ntpserver           string       `xml:"ntpserver,omitempty"           json:"ntpserver,omitempty"           yaml:"ntpserver,omitempty"`
+	// Not mapped into the common model, so a scalar is accurate today. Make it
+	// []string before mapping it: <dnsserver> repeats (GOTCHAS 3.3).
+	Dnsserver string `xml:"dnsserver,omitempty" json:"dnsserver,omitempty" yaml:"dnsserver,omitempty"`
+	Ntpserver string `xml:"ntpserver,omitempty" json:"ntpserver,omitempty" yaml:"ntpserver,omitempty"`
 
 	// Advanced DHCP fields for interfaces
 	AdvDHCPRequestOptions                    string `xml:"adv_dhcp_request_options,omitempty"                      json:"advDhcpRequestOptions,omitempty"                    yaml:"advDhcpRequestOptions,omitempty"`
@@ -196,7 +197,8 @@ type Interface struct {
 	AdvDHCP6IDAssocStatementPrefixPLTime     string `xml:"adv_dhcp6_id_assoc_statement_prefix_pltime,omitempty"    json:"advDhcp6IdAssocStatementPrefixPltime,omitempty"     yaml:"advDhcp6IdAssocStatementPrefixPltime,omitempty"`
 }
 
-// VLANConfig represents a Virtual Local Area Network configuration for network config.
+// VLANConfig represents a Virtual Local Area Network configuration used in [NetworkConfig].
+// This is a simplified VLAN representation for the common device model.
 type VLANConfig struct {
 	Name              string `xml:"vlanif,omitempty"`
 	Tag               string `xml:"tag,omitempty"`
@@ -205,13 +207,14 @@ type VLANConfig struct {
 	Description       string `xml:"descr,omitempty"`
 }
 
-// VLANs represents a collection of VLAN configurations in the OPNsense document.
+// VLANs represents the <vlans> container element holding all VLAN configurations in the OPNsense document.
 type VLANs struct {
 	XMLName xml.Name `xml:"vlans"`
 	VLAN    []VLAN   `xml:"vlan,omitempty"`
 }
 
-// VLAN represents a VLAN configuration in the OPNsense document.
+// VLAN represents a single VLAN configuration entry with its parent physical interface,
+// 802.1Q tag, virtual interface name (vlanif), and creation/update timestamps.
 type VLAN struct {
 	XMLName xml.Name `xml:"vlan"`
 	If      string   `xml:"if,omitempty"`
@@ -222,9 +225,28 @@ type VLAN struct {
 	Updated string   `xml:"updated,omitempty"`
 }
 
-// Bridge represents a network bridge configuration.
+// IsPlaceholder reports whether the value is an empty <vlan/> marker rather
+// than a configured VLAN. OPNsense writes that self-closing element inside
+// <vlans> when nothing is configured -- testdata/opnsense-config.dtd
+// declares it as "<!ELEMENT vlan EMPTY>" -- and it unmarshals into an entry whose
+// configuration fields are all zero.
+//
+// The check is deliberately conservative: an entry is dropped only when every
+// field is zero. See GOTCHAS.md section 3.4 for why fields are compared by name
+// rather than against the zero value.
+func (v VLAN) IsPlaceholder() bool {
+	return v.If == "" &&
+		v.Tag == "" &&
+		v.Descr == "" &&
+		v.Vlanif == "" &&
+		v.Created == "" &&
+		v.Updated == ""
+}
+
+// Bridge represents a network bridge configuration, combining multiple interfaces
+// into a single Layer 2 broadcast domain with optional STP (Spanning Tree Protocol).
 type Bridge struct {
-	XMLName  xml.Name `xml:"bridge"`
+	XMLName  xml.Name `xml:"bridged"`
 	Members  string   `xml:"members,omitempty"`
 	Descr    string   `xml:"descr,omitempty"`
 	Bridgeif string   `xml:"bridgeif,omitempty"`
@@ -233,13 +255,36 @@ type Bridge struct {
 	Updated  string   `xml:"updated,omitempty"`
 }
 
-// Bridges represents a collection of bridge configurations.
-type Bridges struct {
-	XMLName xml.Name `xml:"bridges"`
-	Bridge  []Bridge `xml:"bridge,omitempty"`
+// IsPlaceholder reports whether b is an empty <bridged/> marker rather than a
+// configured bridge. OPNsense writes that self-closing element inside <bridges>
+// when nothing is configured -- the shipped testdata/opnsense-config.dtd
+// declares it as "<!ELEMENT bridged EMPTY>" for exactly this reason -- and it
+// unmarshals into an entry whose configuration fields are all zero.
+//
+// The check is deliberately conservative: an entry is dropped only when every
+// field is zero. A bridge carrying any data at all -- even just a description --
+// is retained, because under-reporting configured resources is the more
+// dangerous direction for an auditing tool.
+//
+// Fields are compared by name rather than against the zero value: encoding/xml
+// populates XMLName on unmarshal, so a decoded <bridged/> never equals Bridge{}.
+func (b Bridge) IsPlaceholder() bool {
+	return b.Bridgeif == "" &&
+		b.Members == "" &&
+		b.Descr == "" &&
+		!bool(b.STP) &&
+		b.Created == "" &&
+		b.Updated == ""
 }
 
-// GIF represents a GIF (Generic Tunnel Interface) configuration entry.
+// Bridges represents the <bridges> container element holding all bridge configurations.
+// OPNsense stores each entry as <bridged>, not <bridge>.
+type Bridges struct {
+	XMLName xml.Name `xml:"bridges"`
+	Bridge  []Bridge `xml:"bridged,omitempty"`
+}
+
+// GIF represents a GIF (Generic Tunnel Interface) configuration entry for IPv4/IPv6-in-IPv4/IPv6 tunneling.
 type GIF struct {
 	XMLName xml.Name `xml:"gif"`
 	Gifif   string   `xml:"gifif,omitempty"`
@@ -250,7 +295,25 @@ type GIF struct {
 	Updated string   `xml:"updated,omitempty"`
 }
 
-// GRE represents a GRE (Generic Routing Encapsulation) tunnel configuration entry.
+// IsPlaceholder reports whether the value is an empty <gif/> marker rather
+// than a configured tunnel. OPNsense writes that self-closing element inside
+// <gifs> when nothing is configured -- testdata/opnsense-config.dtd
+// declares it as "<!ELEMENT gif EMPTY>" -- and it unmarshals into an entry whose
+// configuration fields are all zero.
+//
+// The check is deliberately conservative: an entry is dropped only when every
+// field is zero. See GOTCHAS.md section 3.4 for why fields are compared by name
+// rather than against the zero value.
+func (g GIF) IsPlaceholder() bool {
+	return g.Gifif == "" &&
+		g.If == "" &&
+		g.Remote == "" &&
+		g.Descr == "" &&
+		g.Created == "" &&
+		g.Updated == ""
+}
+
+// GRE represents a GRE (Generic Routing Encapsulation) tunnel configuration entry for point-to-point encapsulation.
 type GRE struct {
 	XMLName xml.Name `xml:"gre"`
 	Greif   string   `xml:"greif,omitempty"`
@@ -261,7 +324,26 @@ type GRE struct {
 	Updated string   `xml:"updated,omitempty"`
 }
 
-// LAGG represents a LAGG (Link Aggregation) interface configuration entry.
+// IsPlaceholder reports whether the value is an empty <gre/> marker rather
+// than a configured tunnel. OPNsense writes that self-closing element inside
+// <gres> when nothing is configured -- testdata/opnsense-config.dtd
+// declares it as "<!ELEMENT gre EMPTY>" -- and it unmarshals into an entry whose
+// configuration fields are all zero.
+//
+// The check is deliberately conservative: an entry is dropped only when every
+// field is zero. See GOTCHAS.md section 3.4 for why fields are compared by name
+// rather than against the zero value.
+func (g GRE) IsPlaceholder() bool {
+	return g.Greif == "" &&
+		g.If == "" &&
+		g.Remote == "" &&
+		g.Descr == "" &&
+		g.Created == "" &&
+		g.Updated == ""
+}
+
+// LAGG represents a LAGG (Link Aggregation) interface configuration entry for bonding
+// multiple physical interfaces using protocols like LACP, failover, or round-robin.
 type LAGG struct {
 	XMLName xml.Name `xml:"lagg"`
 	Laggif  string   `xml:"laggif,omitempty"`
@@ -272,7 +354,26 @@ type LAGG struct {
 	Updated string   `xml:"updated,omitempty"`
 }
 
-// VIP represents a virtual IP address configuration entry.
+// IsPlaceholder reports whether the value is an empty <lagg/> marker rather
+// than a configured link aggregation. OPNsense writes that self-closing element inside
+// <laggs> when nothing is configured -- testdata/opnsense-config.dtd
+// declares it as "<!ELEMENT lagg EMPTY>" -- and it unmarshals into an entry whose
+// configuration fields are all zero.
+//
+// The check is deliberately conservative: an entry is dropped only when every
+// field is zero. See GOTCHAS.md section 3.4 for why fields are compared by name
+// rather than against the zero value.
+func (l LAGG) IsPlaceholder() bool {
+	return l.Laggif == "" &&
+		l.Members == "" &&
+		l.Proto == "" &&
+		l.Descr == "" &&
+		l.Created == "" &&
+		l.Updated == ""
+}
+
+// VIP represents a virtual IP address configuration entry used for CARP, IP alias,
+// proxy ARP, or other virtual address modes bound to a specific interface.
 type VIP struct {
 	XMLName   xml.Name `xml:"vip"`
 	Mode      string   `xml:"mode,omitempty"`
@@ -281,7 +382,24 @@ type VIP struct {
 	Descr     string   `xml:"descr,omitempty"`
 }
 
-// PPP represents a PPP (Point-to-Point Protocol) interface configuration entry.
+// IsPlaceholder reports whether the value is an empty <vip/> marker rather
+// than a configured virtual IP. OPNsense writes that self-closing element inside
+// <virtualip> when nothing is configured -- testdata/opnsense-config.dtd
+// declares it as "<!ELEMENT vip EMPTY>" -- and it unmarshals into an entry whose
+// configuration fields are all zero.
+//
+// The check is deliberately conservative: an entry is dropped only when every
+// field is zero. See GOTCHAS.md section 3.4 for why fields are compared by name
+// rather than against the zero value.
+func (v VIP) IsPlaceholder() bool {
+	return v.Mode == "" &&
+		v.Interface == "" &&
+		v.Subnet == "" &&
+		v.Descr == ""
+}
+
+// PPP represents a PPP (Point-to-Point Protocol) interface configuration entry,
+// covering PPPoE, PPTP, and L2TP connection types.
 type PPP struct {
 	XMLName xml.Name `xml:"ppp"`
 	If      string   `xml:"if,omitempty"`
@@ -289,7 +407,34 @@ type PPP struct {
 	Descr   string   `xml:"descr,omitempty"`
 }
 
-// IfGroupEntry represents an interface group entry configuration.
+// IsPlaceholder reports whether p is an empty <ppp/> marker rather than a
+// configured PPP link. OPNsense writes that self-closing element inside <ppps>
+// when nothing is configured, and it unmarshals into an entry whose
+// configuration fields are all zero.
+//
+// The check is deliberately conservative: an entry is dropped only when every
+// field is zero. A link carrying any data at all -- even just a description --
+// is retained, because under-reporting configured resources is the more
+// dangerous direction for an auditing tool.
+//
+// Fields are compared by name rather than against the zero value: encoding/xml
+// populates XMLName on unmarshal, so a decoded <ppp/> never equals PPP{}.
+//
+// The pfSense parser shares this type, and pkg/schema/pfsense/README.md records
+// <ppps> as an "Identical base" rather than a full mirror: real pfSense entries
+// can also carry ptpid, ports, username, password, provider, and mtu, none of
+// which this struct declares. An entry populating only those unparsed fields
+// would be read as a placeholder. No committed fixture exhibits that shape, and
+// a usable PPP link sets if and type in practice, so this is an accepted
+// assumption rather than a known defect -- but a fuller pfSense PPP fork must
+// extend this predicate along with the struct.
+func (p PPP) IsPlaceholder() bool {
+	return p.If == "" &&
+		p.Type == "" &&
+		p.Descr == ""
+}
+
+// IfGroupEntry represents an interface group entry, binding a group name to its member interfaces.
 type IfGroupEntry struct {
 	XMLName xml.Name `xml:"ifgroupentry"`
 	IfName  string   `xml:"ifname,omitempty"`

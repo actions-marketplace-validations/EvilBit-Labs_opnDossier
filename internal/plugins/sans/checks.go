@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/EvilBit-Labs/opnDossier/internal/constants"
+	"github.com/EvilBit-Labs/opnDossier/internal/analysis"
 	common "github.com/EvilBit-Labs/opnDossier/pkg/model"
 )
 
@@ -38,12 +38,6 @@ var appLayerProxyPackages = []string{
 	"squid",
 }
 
-// isWANInterface reports whether the interface name represents a WAN interface.
-func isWANInterface(name string) bool {
-	lower := strings.ToLower(name)
-	return lower == "wan" || strings.HasPrefix(lower, "wan")
-}
-
 // isDMZOrOPTInterface reports whether the interface name represents a DMZ or OPT interface.
 func isDMZOrOPTInterface(name string) bool {
 	lower := strings.ToLower(name)
@@ -62,9 +56,12 @@ func enabledPassRules(device *common.CommonDevice) []common.FirewallRule {
 	return rules
 }
 
-// ruleAppliesToWAN reports whether a firewall rule applies to any WAN interface.
-func ruleAppliesToWAN(rule common.FirewallRule) bool {
-	return slices.ContainsFunc(rule.Interfaces, isWANInterface)
+// ruleAppliesToWAN reports whether a firewall rule applies to any WAN
+// interface. It delegates to the shared RuleReachability helper so unscoped
+// floating rules (empty interface list, resolved against the device's live
+// interfaces) are not missed.
+func ruleAppliesToWAN(rule common.FirewallRule, ifaces []common.Interface) bool {
+	return analysis.RuleReachability(rule, ifaces) == analysis.WANReachable
 }
 
 // portMatchesDangerous checks whether a port specification matches any dangerous port.
@@ -116,8 +113,8 @@ func (sp *Plugin) checkDefaultDeny(device *common.CommonDevice) checkResult {
 			hasBlock = true
 		}
 		if r.Type == common.RuleTypePass &&
-			r.Source.Address == constants.NetworkAny &&
-			r.Destination.Address == constants.NetworkAny {
+			analysis.IsAnyEndpoint(r.Source) &&
+			analysis.IsAnyEndpoint(r.Destination) {
 			hasAnyAnyPass = true
 		}
 	}
@@ -330,7 +327,7 @@ func (sp *Plugin) checkAntiSpoofing(device *common.CommonDevice) checkResult {
 
 	hasWAN := false
 	for _, iface := range device.Interfaces {
-		if !iface.Enabled || !isWANInterface(iface.Name) {
+		if !iface.Enabled || !analysis.IsWANInterfaceName(iface.Name) {
 			continue
 		}
 		hasWAN = true
@@ -393,7 +390,7 @@ func (sp *Plugin) checkDangerousPorts(device *common.CommonDevice) checkResult {
 	}
 
 	for _, r := range enabledPassRules(device) {
-		if !ruleAppliesToWAN(r) {
+		if !ruleAppliesToWAN(r, device.Interfaces) {
 			continue
 		}
 		if portMatchesDangerous(r.Destination.Port) || portMatchesDangerous(r.Source.Port) {
@@ -467,7 +464,7 @@ func (sp *Plugin) checkMailRestriction(device *common.CommonDevice) checkResult 
 		if r.Destination.Port == "25" || r.Destination.Port == "587" ||
 			r.Destination.Port == "465" {
 			hasSMTPRules = true
-			if r.Destination.Address == constants.NetworkAny {
+			if analysis.IsAnyEndpoint(r.Destination) {
 				return checkResult{Result: false, Known: true}
 			}
 		}
@@ -489,7 +486,7 @@ func (sp *Plugin) checkICMPFiltering(device *common.CommonDevice) checkResult {
 	}
 
 	for _, r := range enabledPassRules(device) {
-		if strings.EqualFold(r.Protocol, "icmp") && ruleAppliesToWAN(r) {
+		if strings.EqualFold(r.Protocol, "icmp") && ruleAppliesToWAN(r, device.Interfaces) {
 			return checkResult{Result: true, Known: true}
 		}
 	}
@@ -520,14 +517,14 @@ func (sp *Plugin) checkDNSZoneTransfer(device *common.CommonDevice) checkResult 
 	}
 
 	for _, r := range enabledPassRules(device) {
-		if !ruleAppliesToWAN(r) {
+		if !ruleAppliesToWAN(r, device.Interfaces) {
 			continue
 		}
 		if !strings.EqualFold(r.Protocol, "tcp") {
 			continue
 		}
 		if r.Destination.Port == "53" &&
-			r.Source.Address == constants.NetworkAny {
+			analysis.IsAnyEndpoint(r.Source) {
 			return checkResult{Result: true, Known: true}
 		}
 	}
@@ -548,7 +545,7 @@ func (sp *Plugin) checkEgressFiltering(device *common.CommonDevice) checkResult 
 			continue
 		}
 		hasOutbound = true
-		if r.Source.Address == constants.NetworkAny {
+		if analysis.IsAnyEndpoint(r.Source) {
 			return checkResult{Result: false, Known: true}
 		}
 	}
@@ -574,7 +571,7 @@ func (sp *Plugin) checkCriticalServerProtection(device *common.CommonDevice) che
 		if r.Type != common.RuleTypeBlock && r.Type != common.RuleTypeReject {
 			continue
 		}
-		if ruleAppliesToWAN(r) {
+		if ruleAppliesToWAN(r, device.Interfaces) {
 			return checkResult{Result: true, Known: true}
 		}
 	}

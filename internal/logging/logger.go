@@ -2,7 +2,6 @@
 package logging
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -119,15 +118,6 @@ func parseLevel(level string) log.Level {
 	}
 }
 
-// WithContext returns a logger with the provided context.
-// charmbracelet/log doesn't have built-in context support yet;
-// this signature exists so callers can pass ctx for future extraction of
-// trace IDs, request IDs, or cancellation-aware logging.
-func (l *Logger) WithContext(ctx context.Context) *Logger {
-	_ = ctx // TODO: extract trace/request IDs from ctx when logging middleware is added
-	return l
-}
-
 // WithPrefix returns a logger with the specified prefix.
 func (l *Logger) WithPrefix(prefix string) *Logger {
 	return &Logger{Logger: l.Logger.WithPrefix(prefix)}
@@ -141,4 +131,16 @@ func (l *Logger) WithFields(keyvals ...any) *Logger {
 // Sub creates a sub-logger with the specified subsystem name.
 func (l *Logger) Sub(subsystem string) *Logger {
 	return &Logger{Logger: l.With("subsystem", subsystem)}
+}
+
+// IsVerbose reports whether the logger is configured at debug level or more
+// verbose. Use this to gate expensive diagnostics (e.g., full stack dumps via
+// runtime/debug.Stack) behind operator opt-in, so centralized logs never leak
+// internal details like plugin paths or function names at default verbosity.
+func (l *Logger) IsVerbose() bool {
+	if l == nil || l.Logger == nil {
+		return false
+	}
+
+	return l.GetLevel() <= log.DebugLevel
 }

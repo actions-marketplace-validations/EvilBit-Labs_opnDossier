@@ -278,9 +278,9 @@ assert.Contains(t, interfaceCell, ", ") // Multi-value separator
 Use `sebdah/goldie/v2` for snapshot testing. Key patterns:
 
 - Golden files contain **actual** values (timestamps, versions), not placeholders
-- Use a `normalizeGoldenOutput` function to normalize dynamic content before comparison
+- Inject dynamic values at construction time via builder options (e.g., `builder.WithGeneratedTime`, `builder.WithVersion`) rather than normalizing output after the fact. Goldie compares bytes directly.
 - Update golden files: `go test ./path -run TestGolden -update`
-- Use `time.RFC3339` for timestamps
+- Use `time.RFC3339` for timestamps; fix the injected test time to UTC so goldens are byte-identical across machines
 - Clean trailing whitespace: `sed -i '' 's/[[:space:]]*$//' *.golden.md`
 - Ensure golden files end with a trailing newline — goldie uses strict byte comparison
 - When making a report section conditional, update tests that assert its presence in ToC
@@ -416,10 +416,7 @@ opnDossier/
 │   ├── export/                       # File export functionality
 │   ├── logging/                      # Structured logging (charmbracelet/log)
 │   ├── plugins/                      # Compliance plugins (firewall/SANS/STIG)
-│   ├── processor/                    # Data processing and report generation
-│   ├── progress/                     # CLI progress indicators
-│   ├── validator/                    # Configuration validation
-│   └── walker.go                     # XML walker utilities
+│   └── validator/                    # Configuration validation
 ├── pkg/                              # Public API packages
 │   ├── model/                        # Platform-agnostic CommonDevice domain model
 │   ├── parser/                       # Factory + DeviceParser interface + shared xmlutil.go
@@ -429,7 +426,6 @@ opnDossier/
 │       ├── opnsense/                 # Canonical OPNsense XML data model structs
 │       └── pfsense/                  # pfSense XML data model (copy-on-write from opnsense)
 ├── docs/                             # Documentation
-├── project_spec/                     # Project requirements
 ├── testdata/                         # Test data files
 └── justfile                          # Task runner
 ```
@@ -472,9 +468,13 @@ type Config struct {
 - Use appropriate log levels (debug, info, warn, error)
 - Avoid logging sensitive information
 
+### CLI Output Policy
+
+The structured logger is one of six CLI output channels. User-facing warnings, interactive prompts, machine-readable output, progress, and the narrow pre-logger fallback each have their own canonical API and rules (TTY-awareness, `TERM=dumb` fallback, what never appears on stdout vs stderr). When adding CLI output, pick the channel by purpose — see [cli-output-policy.md](cli-output-policy.md) for the full policy.
+
 ### Thread Safety with `sync.RWMutex`
 
-When a struct uses `sync.RWMutex`, all read methods need `RLock()` — not just write paths. Go's `RWMutex` is not reentrant; internal call chains should use lock-free `*Unsafe()` helpers. Getter methods should return value copies, not pointers into protected state. See `internal/processor/report.go` for the canonical pattern.
+When a struct uses `sync.RWMutex`, all read methods need `RLock()` — not just write paths. Getter methods should return value copies, not pointers into protected state. See `internal/sanitizer/mapper.go` for the canonical pattern: every mutator takes `Lock()`, `GenerateReport()` takes `RLock()`, and it returns copied maps rather than references into protected state. Go's `RWMutex` is also not reentrant, so an internal call chain must not re-acquire a lock it already holds — factor the shared body into a lock-free helper that the locked method calls, rather than nesting lock acquisitions.
 
 ### XML Handling
 
@@ -494,7 +494,7 @@ When adding `io.Writer` support alongside string-returning APIs, split responsib
 
 Parser registration follows the `database/sql` model: parsers call `parser.Register(name, factory)` from `init()`. **Critical:** any file using `parser.NewFactory()` must blank-import the parser packages (e.g., `_ ".../pkg/parser/opnsense"` and `_ ".../pkg/parser/pfsense"`). Without it, the registry is empty. See **[GOTCHAS.md](https://github.com/EvilBit-Labs/opnDossier/blob/main/GOTCHAS.md#71-blank-import-requirement)** for symptoms and fixes.
 
-Both parsers share XML security hardening via `parser.NewSecureXMLDecoder()` in `pkg/parser/xmlutil.go` (LimitReader, XXE protection, charset handling). The pfSense parser manages its own XML decoding because `XMLDecoder` returns `*schema.OpnSenseDocument`; validation is injected via `pfsense.ValidateFunc` (set in `cmd/root.go`).
+Both parsers share XML security hardening via `parser.NewSecureXMLDecoder()` in `pkg/parser/xmlutil.go` (LimitReader, XXE protection, charset handling). The pfSense parser manages its own XML decoding because `OPNsenseXMLDecoder` returns `*schema.OpnSenseDocument`; validation is injected via `pfsense.SetValidator` (called from `cmd/root.go`). `SetValidator` is guarded by a `sync.Once`, so a dynamically loaded plugin's `init()` cannot stomp the CLI-installed validator — see **[GOTCHAS.md §20](https://github.com/EvilBit-Labs/opnDossier/blob/main/GOTCHAS.md#20-pfsense-validator-injection)**.
 
 ### File Write Safety
 
@@ -619,11 +619,11 @@ Add `IsAny()` / `Equal()` methods rather than comparing `*string` fields directl
 
 **Type selection for boolean-like XML elements:**
 
-- **Presence-based** (`isset()` in PHP): `<disabled/>`, `<log/>`, `<not/>` → use `BoolFlag`
-- **Value-based** (`== "1"` in PHP): `<enable>1</enable>`, `<blockpriv>1</blockpriv>` → use `string`
-- **Presence with value access needed**: `<any/>` in Source/Destination → use `*string`
+- **Presence-based** (`isset()` in PHP): `<disabled/>`, `<log/>`, `<not/>` → use `BoolFlag`. Absent element means false; `<tag/>` means true. `BoolFlag` also handles `<tag>on</tag>`-style bodies via `shared.IsValueTrue`, so it works for fields where the XML is sometimes empty and sometimes carries a truthy value.
+- **Value-based, always emitted** (`== "1"` in PHP with the element always present): `<enable>1</enable>` → use `shared.FlexBool` (for bool semantics) or keep as `string` + call `shared.IsValueTrue()` at the converter. Do not use `BoolFlag` here: it marshals `false` as element absence, which drops explicit false values on round-trip.
+- **Presence with value access needed**: `<any/>` in Source/Destination → use `*string`.
 
-See `docs/development/xml-structure-research.md` for the complete field inventory with upstream source citations.
+See `docs/development/xml-structure-research.md` for the complete field inventory with upstream source citations and [GOTCHAS.md §15](https://github.com/EvilBit-Labs/opnDossier/blob/main/GOTCHAS.md#15-liberal-boolean-and-integer-parsing) for the full decision rubric.
 
 **BoolFlag in forked structs:** When a copy-on-write struct changes a field from `string` to `BoolFlag`, add a private type alias and a pointer-receiver `MarshalXML` that delegates via `e.EncodeElement((*alias)(ptr), start)`. See `pkg/schema/pfsense/interfaces.go` and [GOTCHAS.md](https://github.com/EvilBit-Labs/opnDossier/blob/main/GOTCHAS.md#151-pointer-receiver-marshalxml-and-value-marshaling) §15.1.
 
@@ -637,10 +637,6 @@ When acquiring semaphores in goroutines, use `select` with `ctx.Done()` to respe
 
 When a goroutine writes to an `io.Writer` and a stop method also writes after signaling shutdown, the goroutine must fully exit before the caller writes. Use a `stopped` channel: goroutine defers `close(stopped)`, stop method does `close(done)` then `<-stopped`.
 
-### Dual Validator Synchronization
-
-`internal/processor/validate.go` maintains lightweight validation whitelists (powerd modes, optimization values, etc.) that must stay in sync with the authoritative `internal/validator/opnsense.go`. When updating allowed values in either package, grep for the same whitelist in the other and update both.
-
 ### Duplicate Code Detection in Tests
 
 The `dupl` linter flags structurally similar test files (e.g., `json_test.go` and `yaml_test.go`). When JSON and YAML tests share device construction and assertions, extract shared logic into `test_helpers.go` (e.g., `newFieldsTestDevice()`, `assertNewFieldsPresent()`) and use a single `Test*` function with subtests for each format. If the files remain structurally similar despite extraction, add `//nolint:dupl` on the package line.
@@ -652,9 +648,7 @@ When adding fields to `common.Statistics`, update two places:
 1. The struct definition in `pkg/model/enrichment.go`
 2. Population logic in `ComputeStatistics()` in `internal/analysis/statistics.go`
 
-The processor's `translateCommonStats()` in `internal/processor/report_statistics.go` must also be updated if new fields are added to `processor.Statistics`.
-
-When changing a `Statistics` field from `string` to a typed enum (e.g., `NATMode string` → `NATMode NATOutboundMode`), add a `string()` cast in `translateCommonStats()` and update test struct field types. Separate check logic from stats updates — never increment stats inside a function that may be called multiple times for fallback logic.
+When changing a `Statistics` field from `string` to a typed enum (e.g., `NATMode string` → `NATMode NATOutboundMode`), update the population logic and the test struct field types together. Separate check logic from stats updates — never increment stats inside a function that may be called multiple times for fallback logic.
 
 ### Public Package Import Aliases
 
@@ -667,13 +661,13 @@ common "github.com/EvilBit-Labs/opnDossier/pkg/model"             // use common.
 
 Files in `pkg/parser/opnsense/` (package `opnsense`) **must** alias the schema import as `schema` to avoid collision. `cmd/` files that use the parser factory import `"github.com/EvilBit-Labs/opnDossier/pkg/parser"` (no alias needed).
 
-`parser.NewFactory(decoder)` requires an `XMLDecoder` argument — wire with `parser.NewFactory(cfgparser.NewXMLParser())` at the call site. The `XMLDecoder` interface is defined in `pkg/parser/factory.go`.
+`parser.NewFactory(decoder)` requires an `OPNsenseXMLDecoder` argument — wire with `parser.NewFactory(cfgparser.NewXMLParser())` at the call site. The `OPNsenseXMLDecoder` interface is defined in `pkg/parser/factory.go`.
 
-**pfSense parser independence:** The pfSense parser in `pkg/parser/pfsense/` manages its own XML decoding because `XMLDecoder.Parse()` returns `*schema.OpnSenseDocument`, which is incompatible with `pfsense.Document`. Security hardening is shared via `parser.NewSecureXMLDecoder()` in `pkg/parser/xmlutil.go`.
+**pfSense parser independence:** The pfSense parser in `pkg/parser/pfsense/` manages its own XML decoding because `OPNsenseXMLDecoder.Parse()` returns `*schema.OpnSenseDocument`, which is incompatible with `pfsense.Document`. Security hardening is shared via `parser.NewSecureXMLDecoder()` in `pkg/parser/xmlutil.go`.
 
 ### Report Serialization Redaction
 
-`Report.ToJSON()` and `Report.ToYAML()` serialize a redacted copy via `redactedCopyUnsafe()` to prevent sensitive fields from leaking. Currently redacted: `SNMP.ROCommunity`, `Certificate.PrivateKey`, and `CertificateAuthority.PrivateKey`. When adding new sensitive fields to `CommonDevice`, extend `redactedCopyUnsafe()` in `internal/processor/report.go`. Certificate/CA slices are deep-copied via `make` + `copy` before mutation. Only entries with non-empty sensitive values are redacted. The copy is constructed field-by-field (not `cp := *r`) to avoid `copylocks` on `sync.RWMutex`.
+Export serialization redacts a copy of the device so sensitive fields never reach a rendered report. `redactSensitiveFields` in `internal/converter/enrichment.go` owns this; it runs from `prepareForExport(device, redact=true)` against an already-cloned copy, so the caller's device is never modified. (`EnrichForExport` only computes the enrichment — it performs no redaction.) Currently redacted: `SNMP.ROCommunity`, `HighAvailability.Password`, `Certificate.PrivateKey`, `CertificateAuthority.PrivateKey`, `Users[].APIKeys[].Secret`, `VPN.WireGuard.Clients[].PSK`, and `AdvDHCP6KeyInfoStatementSecret`. **When adding a new sensitive field to `CommonDevice`, extend `redactSensitiveFields`** — a field added without a redaction rule ships in cleartext in every JSON, YAML, and HTML export. Slices are cloned before mutation, and only entries with a non-empty sensitive value are rewritten, so the caller's device is never modified. SNMP service-detail redaction is separate and shared: see `RedactServiceDetails` in `internal/analysis/statistics_redact.go`.
 
 ### Sanitizer Field Pattern Maintenance
 
@@ -683,7 +677,14 @@ The `sanitize` command operates on raw XML element names via pattern matching in
 
 ### Schema-Level Secret Exclusion
 
-Secret fields in `pkg/schema/` structs must carry `json:"-" yaml:"-"` tags to prevent accidental serialization. This is defense-in-depth alongside `redactedCopyUnsafe()`. Do NOT map these fields to the common model — the sanitizer handles them at the XML level.
+Secret fields in `pkg/schema/` structs must carry `json:"-" yaml:"-"` tags so a stray marshal of a DTO cannot serialize them.
+
+Whether such a field may reach `CommonDevice` depends on whether the report needs it:
+
+- **Never mapped.** A secret the report has no use for — an IPsec pre-shared key, a raw password hash — stays in the schema layer only, and the sanitizer handles it at the XML level. `pkg/schema/pfsense.IPsecPhase1.PreSharedKey` is the reference case.
+- **Mapped and redacted.** A field the report must show in redacted form — `Certificate.PrivateKey`, `HighAvailability.Password`, `SNMP.ROCommunity` — is mapped, and `redactSensitiveFields` rewrites it before export. Mapping one of these without adding it there ships it in cleartext.
+
+The schema tags are defense-in-depth for both cases, not a substitute for the export-path redaction.
 
 ### File-Split Refactoring Pattern
 
@@ -718,7 +719,7 @@ When splitting a large file into domain-specific files within the same package:
 - `pfsense.Group` has `Priv []string` (not `string`) — converter uses `strings.Join(g.Priv, ", ")`
 - `pfsense.System.DNSServers` is `[]string` (not space-separated `string`) — no `strings.Fields()` needed
 - `pfsense.InboundRule` has `Target` field — converter uses `Target` with fallback to `InternalIP`
-- pfSense value-based booleans use "1", "on", or "yes" — use `isPfSenseValueTrue()`, not `== "1"`
+- pfSense and OPNsense value-based booleans use "1", "on", "yes", "true", "enable", or "enabled" (case-insensitive) — use `shared.IsValueTrue()` from `pkg/schema/shared`, or type the field as `FlexBool` when the element is always emitted, rather than `== "1"`. Use `BoolFlag` **only** for presence-based toggles where element absence means false (e.g., `<enable/>`); using it for value-based booleans can drop explicit false values on marshal since `BoolFlag` marshals false as an absent element
 - `pfsense.Interface` has `Enable opnsense.BoolFlag` (not `string`) — use `iface.Enable.Bool()`
 - `pfsense.Group.Member` is `[]string` (listtag) — converter uses `strings.Join(g.Member, ", ")`
 
@@ -740,12 +741,12 @@ See [`pkg/schema/pfsense/README.md`](https://github.com/EvilBit-Labs/opnDossier/
 
 **Compliance results model:**
 
-- `CommonDevice.ComplianceChecks` uses `*ComplianceResults`. Types mirror `audit`/`analysis`/`compliance` shapes but live in `common` to avoid circular deps
+- `CommonDevice.ComplianceResults` uses `*ComplianceResults`. Types mirror `audit`/`analysis`/`compliance` shapes but live in `common` to avoid circular deps
 - Populated by `mapAuditReportToComplianceResults()` in `cmd/audit_handler.go`, not by `prepareForExport()` (pass-through only)
 
 **Audit report rendering:**
 
-- `handleAuditMode()` in `cmd/audit_handler.go` maps `audit.Report` → `device.ComplianceChecks`, creates a shallow copy (immutability), then delegates to `generateWithProgrammaticGenerator()`
+- `handleAuditMode()` in `cmd/audit_handler.go` maps `audit.Report` → `device.ComplianceResults`, creates a shallow copy (immutability), then delegates to `generateWithProgrammaticGenerator()`
 - `ComplianceResultSummary` int fields use `json:"field"` (no `omitempty`) — zero values must serialize
 - Plugin names and metadata keys iterated in sorted order (`slices.Sorted(maps.Keys(...))`)
 

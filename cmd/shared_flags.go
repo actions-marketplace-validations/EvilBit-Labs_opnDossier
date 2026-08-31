@@ -35,19 +35,10 @@ var (
 	sharedIncludeTunables bool     //nolint:gochecknoglobals // Include system tunables in output
 	sharedComprehensive   bool     //nolint:gochecknoglobals // Generate comprehensive report
 	sharedRedact          bool     //nolint:gochecknoglobals // Redact sensitive fields in output
-
-	// Audit flags.
-	// TODO(#457): Remove shared audit globals — no longer bound to any CLI flags
-	// after audit flag removal from convert. Retained because buildAuditOptions()
-	// and generateOutputByFormat() still reference them.
-	sharedAuditMode       string   //nolint:gochecknoglobals // Audit mode (blue, red)
-	sharedSelectedPlugins []string //nolint:gochecknoglobals // Selected compliance plugins
-	sharedPluginDir       string   //nolint:gochecknoglobals // Directory for dynamic .so plugins
 )
 
-// addSharedTemplateFlags adds shared CLI flags for content, formatting, and audit-related
-// output controls to the provided command. The function name is retained for backward
-// compatibility but it no longer introduces template-specific flags.
+// addSharedContentFlags adds shared CLI flags for content, formatting, and audit-related
+// output controls to the provided command.
 //
 // Flags added:
 //
@@ -62,26 +53,26 @@ var (
 //	mycmd --section system,network --wrap 100 --include-tunables --comprehensive
 //
 // cmd must be a non-nil *cobra.Command.
-func addSharedTemplateFlags(cmd *cobra.Command) {
+func addSharedContentFlags(cmd *cobra.Command) {
 	cmd.Flags().
 		BoolVar(&sharedIncludeTunables, "include-tunables", false, "Include all system tunables in report output (markdown, text, HTML only; JSON/YAML always include all tunables)")
-	setFlagAnnotation(cmd.Flags(), "include-tunables", []string{"content"})
+	setFlagAnnotation(cmd.Flags(), "include-tunables", []flagCategory{categoryContent})
 
 	cmd.Flags().
 		StringSliceVar(&sharedSections, "section", []string{}, "Specific sections to include in output (comma-separated, e.g., system,network,firewall)")
-	setFlagAnnotation(cmd.Flags(), "section", []string{"content"})
+	setFlagAnnotation(cmd.Flags(), "section", []flagCategory{categoryContent})
 
 	cmd.Flags().
 		IntVar(&sharedWrapWidth, "wrap", -1, "Text wrap width in characters (-1 = auto-detect terminal width, 0 = no wrapping, recommended: 80-120)")
-	setFlagAnnotation(cmd.Flags(), "wrap", []string{"formatting"})
+	setFlagAnnotation(cmd.Flags(), "wrap", []flagCategory{categoryFormatting})
 
 	cmd.Flags().
 		BoolVar(&sharedNoWrap, "no-wrap", false, "Disable text wrapping (alias for --wrap 0)")
-	setFlagAnnotation(cmd.Flags(), "no-wrap", []string{"formatting"})
+	setFlagAnnotation(cmd.Flags(), "no-wrap", []flagCategory{categoryFormatting})
 
 	cmd.Flags().
 		BoolVar(&sharedComprehensive, "comprehensive", false, "Generate comprehensive detailed reports with full configuration analysis")
-	setFlagAnnotation(cmd.Flags(), "comprehensive", []string{"audit"})
+	setFlagAnnotation(cmd.Flags(), "comprehensive", []flagCategory{categoryAudit})
 }
 
 // addDisplayFlags adds display-related CLI flags to cmd.
@@ -90,7 +81,7 @@ func addSharedTemplateFlags(cmd *cobra.Command) {
 func addDisplayFlags(cmd *cobra.Command) {
 	cmd.Flags().
 		StringVar(&sharedTheme, "theme", "", "Theme for rendering output (light, dark, auto, none)")
-	setFlagAnnotation(cmd.Flags(), "theme", []string{"display"})
+	setFlagAnnotation(cmd.Flags(), "theme", []flagCategory{categoryDisplay})
 }
 
 // addSharedRedactFlag adds the --redact flag to cmd for redacting sensitive fields
@@ -98,7 +89,7 @@ func addDisplayFlags(cmd *cobra.Command) {
 func addSharedRedactFlag(cmd *cobra.Command) {
 	cmd.Flags().
 		BoolVar(&sharedRedact, "redact", false, "Redact sensitive fields (passwords, keys, community strings) in output")
-	setFlagAnnotation(cmd.Flags(), "redact", []string{"output"})
+	setFlagAnnotation(cmd.Flags(), "redact", []flagCategory{categoryOutput})
 }
 
 // Constants for flag validation.
@@ -108,6 +99,48 @@ const (
 	// MaxWrapWidth is the maximum recommended wrap width in characters.
 	MaxWrapWidth = 200
 )
+
+// pluginDirFlagUsage is the shared --plugin-dir help text. Every command that
+// exposes this flag must use this string so the trust-model warning stays in
+// sync. See GOTCHAS §2.5 and docs/user-guide/commands/audit.md §"Third-Party
+// Plugin Security".
+const pluginDirFlagUsage = "Directory containing third-party .so compliance plugins (does not affect built-in stig/sans/firewall). " +
+	"Plugins run with full process privileges; signatures are not verified. " +
+	"Do not point at untrusted-writable directories. " +
+	"Linux/macOS/FreeBSD only; no-op on Windows. " +
+	"See GOTCHAS §2.5 and docs/user-guide/commands/audit.md § Third-Party Plugin Security."
+
+// pluginDirTrustModelWarning is the exact stderr warning emitted when a
+// non-empty --plugin-dir flag is supplied. It mirrors the red-mode warning
+// precedent in cmd/audit.go. Tests pin the "no signature verification" and
+// "full process privileges" substrings.
+const pluginDirTrustModelWarning = "Warning: --plugin-dir loads dynamic .so plugins with full process privileges\n" +
+	"and no signature verification. Only load plugins you trust and have reviewed.\n" +
+	"See GOTCHAS §2.5 for details.\n"
+
+// warnPluginDirTrustModel writes the dynamic-plugin trust-model warning to w
+// when pluginDir is non-empty. It is a no-op for an empty pluginDir. Commands
+// that accept a --plugin-dir flag should call this from PreRunE so every
+// invocation that opts into dynamic plugin loading sees the warning at the
+// moment the risk materializes, before any .so file is opened.
+//
+// The warning format is stable and asserted in tests. See pluginDirTrustModelWarning.
+//
+// Returns the underlying write error when w fails. Callers should treat a
+// non-nil return as fatal — silently loading a dynamic .so without the
+// operator having seen the trust-model warning is the security regression
+// this function exists to prevent.
+func warnPluginDirTrustModel(w io.Writer, pluginDir string) error {
+	if pluginDir == "" {
+		return nil
+	}
+
+	if _, err := fmt.Fprint(w, pluginDirTrustModelWarning); err != nil {
+		return fmt.Errorf("write trust-model warning: %w", err)
+	}
+
+	return nil
+}
 
 // ValidXMLFiles provides shell completion for XML configuration files.
 // It returns a list of .xml files in the current directory and subdirectories,
@@ -173,11 +206,11 @@ func ValidXMLFiles(_ *cobra.Command, _ []string, toComplete string) ([]string, c
 // When registering a new format in the DefaultRegistry, add a description here too.
 // Missing entries fall back to a generic description.
 var formatDescriptions = map[string]string{ //nolint:gochecknoglobals // static lookup table
-	"markdown": "Standard markdown format (default)",
-	"json":     "JSON format for programmatic access",
-	"yaml":     "YAML format for configuration management",
-	"text":     "Plain text format (markdown without formatting)",
-	"html":     "Self-contained HTML report for web viewing",
+	outputFormatMarkdown: "Standard markdown format (default)",
+	outputFormatJSON:     "JSON format for programmatic access",
+	outputFormatYAML:     "YAML format for configuration management",
+	outputFormatText:     "Plain text format (markdown without formatting)",
+	outputFormatHTML:     "Self-contained HTML report for web viewing",
 }
 
 // deviceTypeDescriptions maps registered device types to their shell completion descriptions.
@@ -276,7 +309,7 @@ func registryPluginNames() []string {
 			return
 		}
 
-		pm := audit.NewPluginManager(logger)
+		pm := audit.NewPluginManager(logger, nil)
 		if initErr := pm.InitializePlugins(context.Background()); initErr != nil {
 			cachedPluginNames = slices.Sorted(maps.Keys(pluginDescriptions))
 

@@ -42,7 +42,7 @@ The `--device-type` flag overrides auto-detection, which is useful if a config f
 opndossier convert config.xml --device-type opnsense
 ```
 
-opnDossier includes built-in parsers for OPNsense and pfSense. The device type system is extensible -- additional device types (e.g., Fortinet) can be added via parser plugins. Use `opndossier convert --device-type <TAB>` to see all available device types via shell completion. See the [Plugin Development Guide](../../dev-guide/plugin-development.md#device-parser-development) for details on creating device parsers.
+opnDossier includes built-in parsers for OPNsense and pfSense. The device type system is extensible -- additional device types (e.g., Fortinet) can be added via parser plugins. Use `opndossier convert --device-type <TAB>` to see all available device types via shell completion. See the [Plugin Development Guide](../../development/plugin-development.md#device-parser-development) for details on creating device parsers.
 
 ## Sections
 
@@ -156,6 +156,7 @@ opndossier convert -f json config1.xml config2.xml
 
 ## Related
 
+- [CLI Reference — `convert`](../../cli/opndossier_convert.md) -- auto-generated exhaustive flag list
 - [audit](audit.md) -- run security audits with compliance checks
 - [display](display.md) -- render in terminal instead of writing to file
 - [validate](validate.md) -- check config correctness before converting

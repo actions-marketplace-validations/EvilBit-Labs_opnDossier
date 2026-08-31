@@ -21,6 +21,10 @@ opnDossier follows strict coding standards and development practices:
 - **Git** - Version control
 - **golangci-lint** - Linting tool
 
+#### Go Support Policy
+
+opnDossier supports the current and previous stable Go releases (N and N-1), matching Go's upstream release policy. CI exercises both versions on every PR via a `stable` + `oldstable` matrix. Once Go releases a new version, the previous `oldstable` drops out of support and may be removed in a subsequent minor release.
+
 ### Development Setup
 
 ```bash
@@ -28,7 +32,8 @@ opnDossier follows strict coding standards and development practices:
 git clone https://github.com/EvilBit-Labs/opnDossier.git
 cd opnDossier
 
-# Install development dependencies
+# Install development dependencies (this also installs the pre-commit and
+# commit-msg git hooks via `pre-commit install`)
 just install
 
 # Verify setup
@@ -37,6 +42,26 @@ just check
 # Run tests
 just test
 ```
+
+If you need to install the hooks manually (e.g., after cloning into a worktree or when `just install` was not run), use:
+
+```bash
+mise exec -- pre-commit install --hook-type pre-commit --hook-type commit-msg
+```
+
+### Git Hooks
+
+The `pre-commit` framework runs fast formatters and linters (mdformat, actionlint, `golangci-lint fmt`, `golangci-lint run --fix`) on every commit. These must be quick enough to never get in the way.
+
+**Full quality bar before pushing.** The `just ci-check` recipe runs the complete suite — `check`, `format-check`, `lint`, `test`, `test-integration`, and `test-race`. Run it manually before pushing when you want the full signal locally:
+
+```bash
+just ci-check
+```
+
+It is intentionally **not** wired to a git hook. A prior iteration added a pre-push `just ci-check` hook, but non-interactive push clients (including Copilot agents) could not recover when the hook failed and discarded the session. Developer discipline replaces automation here — CI runs the subset it can host, and `just ci-check` remains the locally-runnable gate.
+
+**Race detector note.** `test-race` (the Go race detector) is **local-only** — run it via `just test-race` or `just ci-check`. It is deliberately not a CI job: GitHub's shared runners cannot host the instrumented suite reliably, and the job failed without producing a usable signal (GOTCHAS § 1.7). That makes your local run the only place a data race gets caught, so run `just ci-check` before you push. If you add a timing bound to a test, decide what it does under the detector first (GOTCHAS § 1.6).
 
 ### Known Gotchas
 
@@ -50,7 +75,7 @@ Before diving into the codebase, read **[GOTCHAS.md](GOTCHAS.md)** -- it documen
 
 ## AI Assistance
 
-We accept considerate AI-assisted contributions. Install `tessl install tessl-labs/good-oss-citizen` first. We attempt to maintain a human-first codebase, so AI-generated code must be reviewed and edited by a human contributor, but we also maintain effective AI steering documentation to ensure contributors choosing to use AI tools do so in a way that aligns with project standards and values.
+We accept considerate AI-assisted contributions. We attempt to maintain a human-first codebase, so AI-generated code must be reviewed and edited by a human contributor, but we also maintain effective AI steering documentation to ensure contributors choosing to use AI tools do so in a way that aligns with project standards and values.
 
 ## Core Philosophy
 
@@ -102,7 +127,6 @@ opndossier/
 │   ├── logging/        # Logging utilities
 │   ├── markdown/       # Markdown generation and validation
 │   ├── plugins/        # Compliance plugins (firewall, sans, stig)
-│   ├── processor/      # Data processing and report generation
 │   └── validator/      # Data validation
 ├── pkg/                 # Public API packages (importable by external Go projects)
 │   ├── model/          # Platform-agnostic CommonDevice domain model
@@ -114,17 +138,16 @@ opndossier/
 │       └── pfsense/    # pfSense XML data model (copy-on-write from opnsense)
 ├── tools/               # Standalone development tools
 ├── testdata/            # Test data and fixtures
-├── docs/                # Documentation
-└── project_spec/        # Project specifications
+└── docs/                # Documentation
 ```
 
 ### Extensibility: Two Plugin Systems
 
 opnDossier has two independent extension points:
 
-**Device Parsers** (`pkg/parser/`) -- Add support for new device types (pfSense, Fortinet, etc.). Device parsers transform vendor-specific XML into the platform-agnostic `CommonDevice` model. They self-register via `init()` and are linked at compile time through blank imports. See the [Device Parser Development](docs/dev-guide/plugin-development.md#device-parser-development) section in the Plugin Development Guide.
+**Device Parsers** (`pkg/parser/`) -- Add support for new device types (pfSense, Fortinet, etc.). Device parsers transform vendor-specific XML into the platform-agnostic `CommonDevice` model. They self-register via `init()` and are linked at compile time through blank imports. See the [Device Parser Development](docs/development/plugin-development.md#device-parser-development) section in the Plugin Development Guide.
 
-**Compliance Plugins** (`internal/plugins/`) -- Add new compliance standards and audit checks. Compliance plugins implement the `compliance.Plugin` interface and run security checks against the `CommonDevice` model. See the [Plugin Development Guide](docs/dev-guide/plugin-development.md) for details.
+**Compliance Plugins** (`internal/plugins/`) -- Add new compliance standards and audit checks. Compliance plugins implement the `compliance.Plugin` interface and run security checks against the `CommonDevice` model. See the [Plugin Development Guide](docs/development/plugin-development.md) for details.
 
 Both systems use self-registration patterns -- adding a new parser or plugin requires zero changes to existing code.
 
@@ -281,7 +304,14 @@ This refactoring was completed in PR #431 (closing issue #323) and maintains ful
 ##### Unit Tests for Methods
 
 ```go
-// import "github.com/EvilBit-Labs/opnDossier/internal/converter/builder"
+import (
+    "testing"
+
+    "github.com/stretchr/testify/assert"
+
+    "github.com/EvilBit-Labs/opnDossier/internal/converter/builder"
+    common "github.com/EvilBit-Labs/opnDossier/pkg/model"
+)
 
 func TestMarkdownBuilder_FilterSystemTunables(t *testing.T) {
     tests := []struct {
@@ -364,14 +394,17 @@ git checkout -b fix/issue-description
 opnDossier treats vulnerability management as a first-class workflow concern.
 
 - **Run scans locally**:
-  - `just scan` - run vulnerability scanning
-  - `just sbom` - generate SBOM artifacts
-- **CI requirements**:
-  - CI runs Grype scans for both the repository filesystem and Go module dependencies (`go.mod`).
-  - Severity thresholds are stricter on `main` (filesystem cutoff is $\\ge$ medium) than on feature branches (filesystem cutoff is $\\ge$ high).
+  - `just scan` - run `gosec` source-code security analysis
+  - `just sbom` - generate SBOM artifacts (CycloneDX + SPDX)
+- **CI requirements** (see [`.github/workflows/security.yml`](https://github.com/EvilBit-Labs/opnDossier/blob/main/.github/workflows/security.yml)):
+  - **govulncheck** scans the Go module graph against the Go vulnerability database.
+  - **CodeQL** performs semantic static analysis on the Go source.
+  - **Trivy** performs a filesystem dependency and misconfiguration scan, reporting `CRITICAL`, `HIGH`, and `MEDIUM` findings.
+  - Scans run on every PR, every push to `main`, and on a weekly schedule.
 - **Where results live**:
-  - SARIF uploads appear in the GitHub Security tab (Code Scanning).
-  - SBOM and vulnerability report artifacts are attached to workflow runs.
+  - CodeQL and Trivy SARIF uploads appear in the GitHub Security tab (Code Scanning).
+  - `govulncheck` failures appear in the workflow summary.
+  - SBOMs are published as release artifacts via `.github/workflows/sbom.yml` and GoReleaser.
 
 ### Secure Coding Principles
 
@@ -379,7 +412,7 @@ Validate and sanitize all inputs at system boundaries. CLI arguments, configurat
 
 Use restrictive file permissions for sensitive material. Configuration files and any outputs containing sensitive data should be written with `0600` permissions.
 
-Keep error messages safe for operators and safe for logs. Do not leak credentials, raw configuration secrets, internal-only filesystem details, or sensitive values in returned errors. The SNMP community redaction logic in `internal/processor/report.go` is the canonical example of how sensitive values should be handled.
+Keep error messages safe for operators and safe for logs. Do not leak credentials, raw configuration secrets, internal-only filesystem details, or sensitive values in returned errors. Two helpers own redaction and they are not interchangeable. `redactSensitiveFields` in `internal/converter/enrichment.go` is the export boundary: every secret-bearing `CommonDevice` field is rewritten there before a report is rendered, so a new sensitive field on the model belongs in that function. `RedactServiceDetails` in `internal/analysis/statistics_redact.go` handles the narrower case of sensitive values inside computed service statistics, such as the SNMP community string. Adding a model secret to the statistics helper alone would leave it in cleartext on the export path.
 
 When adding a new device type, audit its XML element names for credential fields and add them to the sanitizer's field-pattern lists in `internal/sanitizer/rules.go` (`FieldPatterns`) and `internal/sanitizer/patterns.go` (`passwordKeywords`). Device types may use different element names for the same data (e.g., pfSense uses `<bcrypt-hash>` where OPNsense uses `<password>`). Verify with: `opndossier sanitize <config.xml> | grep -iE 'hash|secret|key|pass|community' | grep -v REDACTED` — the output should be empty. Any lines that appear contain unredacted sensitive values that need new sanitizer rules.
 
@@ -540,9 +573,13 @@ ctxLogger := logger.With("operation", "convert")
 ctxLogger.Error("Conversion failed", "error", err)
 ```
 
+### CLI Output Policy
+
+opnDossier's CLI has several distinct output channels (user-facing warnings, diagnostics, interactive prompts, machine-readable output, progress, and the narrow pre-logger fallback). When adding any CLI output, pick the channel that matches the purpose — not the nearest convenient tool. See [docs/development/cli-output-policy.md](docs/development/cli-output-policy.md) for the full policy, TTY / `TERM=dumb` rules, and what must never appear on which stream.
+
 ### Thread Safety with `sync.RWMutex`
 
-When a struct uses `sync.RWMutex`, all read methods need `RLock()` -- not just write paths. Go's `RWMutex` is also not reentrant, so internal call chains should use lock-free `*Unsafe()` helpers instead of trying to acquire the same lock twice. Getter methods should return value copies rather than pointers into protected internal state. The canonical pattern lives in `internal/processor/report.go`. See the [Development Standards](docs/development/standards.md#thread-safety-with-syncrwmutex) for the full thread safety guide.
+When a struct uses `sync.RWMutex`, all read methods need `RLock()` -- not just write paths. Getter methods should return value copies, not pointers into protected state. See `internal/sanitizer/mapper.go` for the canonical pattern: every mutator takes `Lock()`, `GenerateReport()` takes `RLock()`, and it returns copied maps rather than references into protected state. Go's `RWMutex` is also not reentrant, so an internal call chain must not re-acquire a lock it already holds -- factor the shared body into a lock-free helper that the locked method calls, rather than nesting lock acquisitions. See the [Development Standards](docs/development/standards.md#thread-safety-with-syncrwmutex) for the full thread safety guide.
 
 ### XML Handling
 
@@ -795,7 +832,7 @@ Go map iteration is non-deterministic. When output is assembled from maps, tests
 
 ### Golden File Testing
 
-The project uses `sebdah/goldie/v2` for snapshot-style testing. Golden files should contain real expected values, not placeholders, and tests should normalize dynamic content with helpers such as `normalizeGoldenOutput` before comparison. Update snapshots with `go test ./path -run TestGolden -update`, and make sure every golden file ends with a trailing newline. For the full pattern, see the [Development Standards](docs/development/standards.md#golden-file-testing).
+The project uses `sebdah/goldie/v2` for snapshot-style testing. Golden files should contain real expected values, not placeholders, and dynamic values (timestamps, versions) should be injected at construction time via builder options (e.g., `builder.WithGeneratedTime`, `builder.WithVersion`) so that goldie can compare bytes directly — no post-hoc normalization. Update snapshots with `go test ./path -run TestGolden -update`, and make sure every golden file ends with a trailing newline. For the full pattern, see the [Development Standards](docs/development/standards.md#golden-file-testing).
 
 ### Pointer Identity Assertions
 
@@ -834,7 +871,7 @@ This project maintains the OSSF Best Practices passing badge. All contributions 
 ### Every PR Must
 
 - Sign off commits with `git commit -s` (DCO enforced by GitHub App)
-- Pass CI (golangci-lint, gofumpt, tests, CodeQL, Grype) before merge
+- Pass CI (golangci-lint, gofumpt, tests, govulncheck, CodeQL, Trivy) before merge
 - Include tests for new functionality — this is policy, not optional
 - Be reviewed (human or CodeRabbit) for correctness, safety, and style
 - Not introduce `panic()` in library code, unchecked errors, or unvalidated input

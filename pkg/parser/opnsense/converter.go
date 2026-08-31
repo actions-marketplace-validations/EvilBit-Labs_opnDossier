@@ -3,12 +3,12 @@ package opnsense
 import (
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 
 	common "github.com/EvilBit-Labs/opnDossier/pkg/model"
 	schema "github.com/EvilBit-Labs/opnDossier/pkg/schema/opnsense"
+	"github.com/EvilBit-Labs/opnDossier/pkg/schema/shared"
 )
 
 // ErrNilDocument is returned when ToCommonDevice receives a nil document.
@@ -19,6 +19,10 @@ var ErrNilDocument = errors.New("opnsense converter: received nil document")
 // concurrent use. Create a new instance per conversion via newConverter().
 type converter struct {
 	warnings []common.ConversionWarning
+	// namedObjects is the alias registry for the document being converted, set
+	// at the top of ToCommonDevice before any sub-converter runs. Sub-converters
+	// read it to populate ObjectRef fields for unused-object detection (#203).
+	namedObjects common.NamedObjects
 }
 
 // newConverter returns a new converter.
@@ -54,6 +58,12 @@ func (c *converter) ToCommonDevice(
 		return nil, nil, fmt.Errorf("ToCommonDevice: %w", ErrNilDocument)
 	}
 
+	namedObjects := c.convertNamedObjects(doc)
+	// Make the registry available to every sub-converter (routing, NAT, etc.)
+	// so they can populate ObjectRef fields without threading it through each
+	// signature. Must be set before the device literal below is evaluated.
+	c.namedObjects = namedObjects
+
 	device := &common.CommonDevice{
 		DeviceType:       common.DeviceTypeOPNsense,
 		Version:          doc.Version,
@@ -68,7 +78,8 @@ func (c *converter) ToCommonDevice(
 		LAGGs:            c.convertLAGGs(doc),
 		VirtualIPs:       c.convertVirtualIPs(doc),
 		InterfaceGroups:  c.convertInterfaceGroups(doc),
-		FirewallRules:    c.convertFirewallRules(doc),
+		NamedObjects:     namedObjects,
+		FirewallRules:    c.convertFirewallRules(doc, namedObjects),
 		NAT:              c.convertNAT(doc),
 		DHCP:             append(c.convertDHCP(doc), c.convertKeaDHCPScopes(doc)...),
 		DNS:              c.convertDNS(doc),
@@ -111,21 +122,21 @@ func (c *converter) convertSystem(doc *schema.OpnSenseDocument) common.System {
 		Optimization:                  sys.Optimization,
 		Language:                      sys.Language,
 		Timezone:                      sys.Timezone,
-		DNSServers:                    strings.Fields(sys.DNSServer),
+		DNSServers:                    fieldsOfEach(sys.DNSServers),
 		TimeServers:                   strings.Fields(sys.TimeServers),
-		DNSAllowOverride:              sys.DNSAllowOverride != 0,
-		DisableNATReflection:          strings.EqualFold(sys.DisableNATReflection, xmlBoolYes),
+		DNSAllowOverride:              bool(sys.DNSAllowOverride),
+		DisableNATReflection:          shared.IsValueTrue(sys.DisableNATReflection),
 		DisableConsoleMenu:            bool(sys.DisableConsoleMenu),
-		DisableVLANHWFilter:           sys.DisableVLANHWFilter != 0,
-		DisableChecksumOffloading:     sys.DisableChecksumOffloading != 0,
-		DisableSegmentationOffloading: sys.DisableSegmentationOffloading != 0,
-		DisableLargeReceiveOffloading: sys.DisableLargeReceiveOffloading != 0,
+		DisableVLANHWFilter:           bool(sys.DisableVLANHWFilter),
+		DisableChecksumOffloading:     bool(sys.DisableChecksumOffloading),
+		DisableSegmentationOffloading: bool(sys.DisableSegmentationOffloading),
+		DisableLargeReceiveOffloading: bool(sys.DisableLargeReceiveOffloading),
 		IPv6Allow:                     sys.IPv6Allow != "",
-		PfShareForward:                sys.PfShareForward != 0,
-		LbUseSticky:                   sys.LbUseSticky != 0,
-		RrdBackup:                     sys.RrdBackup != 0,
-		NetflowBackup:                 sys.NetflowBackup != 0,
-		UseVirtualTerminal:            sys.UseVirtualTerminal != 0,
+		PfShareForward:                bool(sys.PfShareForward),
+		LbUseSticky:                   bool(sys.LbUseSticky),
+		RrdBackup:                     bool(sys.RrdBackup),
+		NetflowBackup:                 bool(sys.NetflowBackup),
+		UseVirtualTerminal:            bool(sys.UseVirtualTerminal),
 		NextUID:                       sys.NextUID,
 		NextGID:                       sys.NextGID,
 		PowerdACMode:                  sys.PowerdACMode,
@@ -135,6 +146,7 @@ func (c *converter) convertSystem(doc *schema.OpnSenseDocument) common.System {
 		Notes:                         sys.Notes,
 		WebGUI: common.WebGUI{
 			Protocol:          sys.WebGUI.Protocol,
+			Port:              sys.WebGUI.Port,
 			SSLCertRef:        sys.WebGUI.SSLCertRef,
 			LoginAutocomplete: bool(sys.WebGUI.LoginAutocomplete),
 			MaxProcesses:      sys.WebGUI.MaxProcesses,
@@ -160,8 +172,17 @@ func (c *converter) convertInterfaces(doc *schema.OpnSenseDocument) []common.Int
 		return nil
 	}
 
+	// Collect-then-sort uses a single allocation. slices.Sorted(maps.Keys)
+	// allocates the iter.Seq closure plus grows the result slice during
+	// collect — measured 7-11 allocs vs 1 across 8-128 entry maps.
+	keys := make([]string, 0, len(items))
+	for k := range items {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+
 	result := make([]common.Interface, 0, len(items))
-	for _, key := range slices.Sorted(maps.Keys(items)) {
+	for _, key := range keys {
 		iface := items[key]
 		result = append(result, common.Interface{
 			Name:         key,
@@ -191,13 +212,17 @@ func (c *converter) convertInterfaces(doc *schema.OpnSenseDocument) []common.Int
 }
 
 // convertVLANs maps doc.VLANs.VLAN to []common.VLAN.
+//
+// Empty <vlan/> placeholders are skipped; see GOTCHAS.md section 3.4. The result
+// is grown on demand rather than preallocated because the loop may skip entries.
 func (c *converter) convertVLANs(doc *schema.OpnSenseDocument) []common.VLAN {
-	if len(doc.VLANs.VLAN) == 0 {
-		return nil
-	}
+	var result []common.VLAN
 
-	result := make([]common.VLAN, 0, len(doc.VLANs.VLAN))
 	for _, v := range doc.VLANs.VLAN {
+		if v.IsPlaceholder() {
+			continue
+		}
+
 		result = append(result, common.VLAN{
 			PhysicalIf:  v.If,
 			Tag:         v.Tag,
@@ -212,7 +237,17 @@ func (c *converter) convertVLANs(doc *schema.OpnSenseDocument) []common.VLAN {
 }
 
 // convertFirewallRules maps doc.Filter.Rule to []common.FirewallRule.
-func (c *converter) convertFirewallRules(doc *schema.OpnSenseDocument) []common.FirewallRule {
+// namedObjects is consulted so that an endpoint whose Address or Port equals
+// a known alias name gets AddressRef/PortRef set (ADR-0002); the resolved
+// inline Address/Port value is kept regardless, so existing consumers keep
+// working unmodified. AddressRef is derived from Source/Destination's
+// AliasAddress (not EffectiveAddress) so an interface/network macro (e.g.
+// "lan") or the "any" wildcard is never mistaken for an alias reference,
+// even when an alias happens to share that name.
+func (c *converter) convertFirewallRules(
+	doc *schema.OpnSenseDocument,
+	namedObjects common.NamedObjects,
+) []common.FirewallRule {
 	if len(doc.Filter.Rule) == 0 {
 		return nil
 	}
@@ -292,16 +327,21 @@ func (c *converter) convertFirewallRules(doc *schema.OpnSenseDocument) []common.
 			Quick:       bool(rule.Quick),
 			Protocol:    rule.Protocol,
 			Source: common.RuleEndpoint{
-				Address: rule.Source.EffectiveAddress(),
-				Port:    rule.Source.Port,
-				Negated: bool(rule.Source.Not),
+				Address:    rule.Source.EffectiveAddress(),
+				AddressRef: namedObjects.Ref(rule.Source.AliasAddress()),
+				Port:       rule.Source.Port,
+				PortRef:    namedObjects.Ref(rule.Source.Port),
+				Negated:    bool(rule.Source.Not),
 			},
 			Destination: common.RuleEndpoint{
-				Address: rule.Destination.EffectiveAddress(),
-				Port:    rule.Destination.Port,
-				Negated: bool(rule.Destination.Not),
+				Address:    rule.Destination.EffectiveAddress(),
+				AddressRef: namedObjects.Ref(rule.Destination.AliasAddress()),
+				Port:       rule.Destination.Port,
+				PortRef:    namedObjects.Ref(rule.Destination.Port),
+				Negated:    bool(rule.Destination.Not),
 			},
 			Target:          rule.Target,
+			TargetRef:       namedObjects.Ref(rule.Target),
 			Gateway:         rule.Gateway,
 			Log:             bool(rule.Log),
 			Disabled:        bool(rule.Disabled),
@@ -340,8 +380,8 @@ func (c *converter) convertNAT(doc *schema.OpnSenseDocument) common.NATConfig {
 
 	nat := common.NATConfig{
 		OutboundMode:       outboundMode,
-		ReflectionDisabled: strings.EqualFold(doc.System.DisableNATReflection, xmlBoolYes),
-		PfShareForward:     doc.System.PfShareForward != 0,
+		ReflectionDisabled: shared.IsValueTrue(doc.System.DisableNATReflection),
+		PfShareForward:     bool(doc.System.PfShareForward),
 		OutboundRules:      c.convertOutboundNATRules(doc.Nat.Outbound.Rule),
 		InboundRules:       c.convertInboundNATRules(doc.Nat.Inbound),
 	}
@@ -366,22 +406,39 @@ func (c *converter) convertOutboundNATRules(rules []schema.NATRule) []common.NAT
 			)
 		}
 
+		ipProto := common.IPProtocol(r.IPProtocol)
+		if r.IPProtocol != "" && !ipProto.IsValid() {
+			c.addWarning(
+				fmt.Sprintf("NAT.OutboundRules[%d].IPProtocol", i),
+				r.IPProtocol,
+				"unrecognized IP protocol family",
+				common.SeverityLow,
+			)
+		}
+
 		result = append(result, common.NATRule{
 			UUID:       r.UUID,
 			Interfaces: []string(r.Interface),
-			IPProtocol: common.IPProtocol(r.IPProtocol),
+			IPProtocol: ipProto,
 			Protocol:   r.Protocol,
 			Source: common.RuleEndpoint{
-				Address: r.Source.EffectiveAddress(),
-				Port:    r.Source.Port,
+				Address:    r.Source.EffectiveAddress(),
+				Port:       r.Source.Port,
+				AddressRef: c.namedObjects.Ref(r.Source.AliasAddress()),
+				PortRef:    c.namedObjects.Ref(r.Source.Port),
 			},
 			Destination: common.RuleEndpoint{
-				Address: r.Destination.EffectiveAddress(),
-				Port:    r.Destination.Port,
+				Address:    r.Destination.EffectiveAddress(),
+				Port:       r.Destination.Port,
+				AddressRef: c.namedObjects.Ref(r.Destination.AliasAddress()),
+				PortRef:    c.namedObjects.Ref(r.Destination.Port),
 			},
 			Target:        r.Target,
+			TargetRef:     c.namedObjects.Ref(r.Target),
 			SourcePort:    r.SourcePort,
+			SourcePortRef: c.namedObjects.Ref(r.SourcePort),
 			NatPort:       r.NatPort,
+			NatPortRef:    c.namedObjects.Ref(r.NatPort),
 			PoolOpts:      r.PoolOpts,
 			StaticNatPort: bool(r.StaticNatPort),
 			NoNat:         bool(r.NoNat),
@@ -422,23 +479,41 @@ func (c *converter) convertInboundNATRules(rules []schema.InboundRule) []common.
 			)
 		}
 
+		ipProto := common.IPProtocol(r.IPProtocol)
+		if r.IPProtocol != "" && !ipProto.IsValid() {
+			c.addWarning(
+				fmt.Sprintf("NAT.InboundRules[%d].IPProtocol", i),
+				r.IPProtocol,
+				"unrecognized IP protocol family",
+				common.SeverityLow,
+			)
+		}
+
 		result = append(result, common.InboundNATRule{
 			UUID:       r.UUID,
 			Interfaces: []string(r.Interface),
-			IPProtocol: common.IPProtocol(r.IPProtocol),
+			IPProtocol: ipProto,
 			Protocol:   r.Protocol,
 			Source: common.RuleEndpoint{
-				Address: r.Source.EffectiveAddress(),
-				Port:    r.Source.Port,
+				Address:    r.Source.EffectiveAddress(),
+				Port:       r.Source.Port,
+				AddressRef: c.namedObjects.Ref(r.Source.AliasAddress()),
+				PortRef:    c.namedObjects.Ref(r.Source.Port),
 			},
 			Destination: common.RuleEndpoint{
-				Address: r.Destination.EffectiveAddress(),
-				Port:    r.Destination.Port,
+				Address:    r.Destination.EffectiveAddress(),
+				Port:       r.Destination.Port,
+				AddressRef: c.namedObjects.Ref(r.Destination.AliasAddress()),
+				PortRef:    c.namedObjects.Ref(r.Destination.Port),
 			},
 			ExternalPort:     r.ExternalPort,
+			ExternalPortRef:  c.namedObjects.Ref(r.ExternalPort),
 			InternalIP:       r.InternalIP,
+			InternalIPRef:    c.namedObjects.Ref(r.InternalIP),
 			InternalPort:     r.InternalPort,
+			InternalPortRef:  c.namedObjects.Ref(r.InternalPort),
 			LocalPort:        r.LocalPort,
+			LocalPortRef:     c.namedObjects.Ref(r.LocalPort),
 			Reflection:       r.Reflection,
 			NATReflection:    r.NATReflection,
 			AssociatedRuleID: r.AssociatedRuleID,

@@ -1,5 +1,3 @@
-// Package parser provides the factory for creating device-specific parsers that
-// transform vendor configuration files into the platform-agnostic CommonDevice model.
 package parser
 
 import (
@@ -9,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	common "github.com/EvilBit-Labs/opnDossier/pkg/model"
 	schema "github.com/EvilBit-Labs/opnDossier/pkg/schema/opnsense"
@@ -20,11 +17,17 @@ import (
 // root-element detection and parsing.
 const DefaultMaxInputSize = 10 * 1024 * 1024 // 10MB
 
-// XMLDecoder parses raw XML input into an OpnSenseDocument. Implementations
-// must handle charset detection, entity expansion protection, and input size
-// limits. The cfgparser.XMLParser in internal/cfgparser provides the default
-// implementation used by the CLI.
-type XMLDecoder interface {
+// OPNsenseXMLDecoder parses raw XML input into an OPNsense
+// [schema.OpnSenseDocument]. The name is OPNsense-specific because the return
+// type is bound to the OPNsense schema — pfSense and other device parsers
+// cannot use this interface directly and must manage their own XML decoding
+// (see [github.com/EvilBit-Labs/opnDossier/pkg/parser/pfsense] for the
+// canonical example).
+//
+// Implementations must handle charset detection, entity expansion protection,
+// and input size limits. The cfgparser.XMLParser in internal/cfgparser
+// provides the default implementation used by the CLI.
+type OPNsenseXMLDecoder interface {
 	// Parse reads XML from r and returns a parsed OpnSenseDocument.
 	Parse(ctx context.Context, r io.Reader) (*schema.OpnSenseDocument, error)
 	// ParseAndValidate reads XML from r, parses it, and applies semantic validation.
@@ -43,20 +46,25 @@ type DeviceParser interface {
 }
 
 // Factory detects device type and delegates to the appropriate DeviceParser.
-// The XMLDecoder is injected at construction to keep pkg/ free of internal/
-// imports. The registry defaults to DefaultRegistry() unless overridden via
-// NewFactoryWithRegistry (e.g., for isolated tests).
+// The OPNsenseXMLDecoder is injected at construction to keep pkg/ free of
+// internal/ imports. The registry defaults to DefaultRegistry() unless
+// overridden via NewFactoryWithRegistry (e.g., for isolated tests).
+//
+// Note: The injected decoder is only consumed by parsers whose output is
+// [schema.OpnSenseDocument] (i.e., the OPNsense parser). Non-OPNsense parsers
+// registered via [Register] accept the decoder for signature compatibility
+// but must manage their own XML decoding.
 type Factory struct {
-	xmlDecoder XMLDecoder
+	xmlDecoder OPNsenseXMLDecoder
 	registry   *DeviceParserRegistry
 }
 
-// NewFactory returns a new Factory that uses the given XMLDecoder for parsing
-// and the global DefaultRegistry() for parser lookup.
+// NewFactory returns a new Factory that uses the given OPNsenseXMLDecoder for
+// parsing and the global DefaultRegistry() for parser lookup.
 // Pass cfgparser.NewXMLParser() from internal/cfgparser at the call site.
-func NewFactory(decoder XMLDecoder) *Factory {
+func NewFactory(decoder OPNsenseXMLDecoder) *Factory {
 	if decoder == nil {
-		panic("parser: NewFactory requires a non-nil XMLDecoder")
+		panic("parser: NewFactory requires a non-nil OPNsenseXMLDecoder")
 	}
 
 	return &Factory{xmlDecoder: decoder, registry: DefaultRegistry()}
@@ -65,9 +73,9 @@ func NewFactory(decoder XMLDecoder) *Factory {
 // NewFactoryWithRegistry returns a Factory that uses a custom registry instead
 // of the global singleton. This is primarily useful for tests that need
 // isolated registry state without polluting the global registry.
-func NewFactoryWithRegistry(decoder XMLDecoder, reg *DeviceParserRegistry) *Factory {
+func NewFactoryWithRegistry(decoder OPNsenseXMLDecoder, reg *DeviceParserRegistry) *Factory {
 	if decoder == nil {
-		panic("parser: NewFactoryWithRegistry requires a non-nil XMLDecoder")
+		panic("parser: NewFactoryWithRegistry requires a non-nil OPNsenseXMLDecoder")
 	}
 
 	if reg == nil {
@@ -86,7 +94,9 @@ func (f *Factory) ensureInitialized() error {
 	}
 
 	if f.xmlDecoder == nil {
-		return errors.New("parser: Factory has nil XMLDecoder; use parser.NewFactory to construct a Factory")
+		return errors.New(
+			"parser: Factory has nil OPNsenseXMLDecoder; use parser.NewFactory to construct a Factory",
+		)
 	}
 
 	if f.registry == nil {
@@ -182,20 +192,47 @@ type peekResult struct {
 	err  error
 }
 
-// peekRootElementBounded reads just enough of r to find the first XML start
-// element, using a bounded LimitReader (capped at DefaultMaxInputSize) and a
-// TeeReader to buffer consumed bytes. It returns the root element name, a
-// reader that replays the buffered bytes followed by the remainder of r, and
-// any error. The decode loop runs in a single goroutine so the caller can
-// select on ctx.Done() to abort when the reader blocks. The reader is wrapped
-// in a ctxReader so the goroutine exits promptly after context cancellation.
+// peekRootElementBounded reads up to [DefaultMaxInputSize] bytes of r to find
+// the first XML start element. It runs the token-scanning loop in a goroutine
+// so ctx cancellation can return promptly, and uses a TeeReader to buffer the
+// consumed bytes. It returns the root element name, a reader that replays the
+// buffered bytes followed by the remainder of r, and any error.
+//
+// CANCELLATION CONTRACT: Callers must ensure the supplied ctx is eventually
+// cancelled. On ctx.Done(), this function returns ctx.Err() immediately, but
+// the inner goroutine itself only exits when the current token read unblocks.
+// The ctx-wrapped reader (see [newCtxReader]) returns ctx.Err() on a
+// subsequent Read call after the underlying blocked Read has returned; it
+// does not interrupt an already-blocked Read. If the supplied reader never
+// yields (e.g., a hung network stream) AND the ctx is never cancelled, the
+// goroutine leaks and retains up to DefaultMaxInputSize bytes in its
+// internal buffer until the process exits.
+//
+// The function deliberately does NOT install a watchdog timer that closes the
+// reader on timeout: peekRootElementBounded receives an [io.Reader] it did
+// not create and therefore does not own. Closing a caller-owned reader from
+// within this helper would corrupt caller state (the caller may legitimately
+// reuse the reader after cancellation, and not every reader is an
+// [io.Closer]). The cancellation contract is the single mechanism callers
+// use to bound goroutine lifetime.
+//
+// CLI callers wrap *os.File readers which return io.EOF promptly on EOF, so
+// the goroutine exits naturally in that path. Library consumers supplying
+// readers that can block indefinitely (sockets, fifos, long-polling HTTP
+// bodies) MUST cancel the context to release the goroutine.
 func peekRootElementBounded(ctx context.Context, r io.Reader) (string, io.Reader, error) {
 	var buf bytes.Buffer
 
 	limited := io.LimitReader(newCtxReader(ctx, r), DefaultMaxInputSize)
 	tee := io.TeeReader(limited, &buf)
 	dec := xml.NewDecoder(tee)
-	dec.CharsetReader = simpleCharsetReader
+	// Same charset reader the device parsers use. This peek only runs on the
+	// auto-detect path; createWithOverride skips it and goes straight to the
+	// device parser, whose decoder installs the identical CharsetReader. Both
+	// paths therefore accept the same set. They diverged before: this peek had
+	// its own narrower reader, so a Windows-1252 config parsed with an explicit
+	// --device-type but was rejected without one.
+	dec.CharsetReader = CharsetReader
 
 	ch := make(chan peekResult, 1)
 
@@ -203,7 +240,17 @@ func peekRootElementBounded(ctx context.Context, r io.Reader) (string, io.Reader
 		for {
 			tok, err := dec.Token()
 			if err != nil {
+				// An encoding the decoder cannot read is not a device-type or
+				// missing-root failure. Reporting it as one sends the operator
+				// after the wrong problem, so keep the category intact.
+				if errors.Is(err, ErrUnsupportedCharset) {
+					ch <- peekResult{err: fmt.Errorf("reading root XML element: %w", err)}
+
+					return
+				}
+
 				ch <- peekResult{err: fmt.Errorf("unsupported device type: no root XML element found: %w", err)}
+
 				return
 			}
 
@@ -244,16 +291,4 @@ func newCtxReader(ctx context.Context, r io.Reader) io.Reader {
 
 		return r.Read(p)
 	})
-}
-
-// simpleCharsetReader handles common XML charset declarations for root-element
-// detection. Only charsets whose ASCII subset matches UTF-8 are accepted, which
-// is sufficient because XML element names use only ASCII-range characters.
-func simpleCharsetReader(charset string, input io.Reader) (io.Reader, error) {
-	switch strings.ToLower(charset) {
-	case "us-ascii", "iso-8859-1", "latin-1", "utf-8":
-		return input, nil
-	default:
-		return nil, fmt.Errorf("unsupported XML charset: %s", charset)
-	}
 }

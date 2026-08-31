@@ -1,0 +1,446 @@
+package analysis
+
+import (
+	"fmt"
+	"strings"
+
+	common "github.com/EvilBit-Labs/opnDossier/pkg/model"
+)
+
+// weakCipherTokens lists cipher/protocol substrings that indicate a legacy,
+// broken, or otherwise weak TLS cipher configuration. Matching is
+// case-insensitive substring search against the configured OpenSSL cipher
+// string.
+var weakCipherTokens = []string{"RC4", "DES", "3DES", "MD5", "NULL", "EXPORT"}
+
+// weakTLSProtocols lists TLS/DTLS protocol-version floors considered
+// insecure by current guidance (TLS 1.0/1.1 and all SSL versions).
+var weakTLSProtocols = []string{"SSLv3", "SSLv2", "TLSv1", "TLSv1.1"}
+
+// ScanObservations runs the shared detection engine over cfg and returns a
+// flat, neutral list of Observations: the existing DetectSecurityIssues
+// detections wrapped with reachability and confidence, plus additive
+// framework-free hygiene detectors for categories no compliance plugin owns
+// at per-instance granularity (insecure management protocols, weak crypto
+// defaults, any-to-any rules, disabled logging).
+//
+// ScanObservations does not modify DetectSecurityIssues or ComputeAnalysis;
+// both remain unchanged for their existing caller in internal/converter
+// (KTD3, R4). Returns nil for a nil cfg.
+func ScanObservations(cfg *common.CommonDevice) []Observation {
+	if cfg == nil {
+		return nil
+	}
+
+	observations := adaptSecurityFindings(DetectSecurityIssues(cfg))
+	observations = append(observations, detectInsecureManagementProtocols(cfg)...)
+	observations = append(observations, detectWeakCryptoDefaults(cfg)...)
+	observations = append(observations, detectAnyToAnyRules(cfg)...)
+	observations = append(observations, detectDisabledLogging(cfg)...)
+	observations = append(observations, detectShadowedRules(cfg)...)
+	observations = append(observations, detectUnusedObjects(cfg)...)
+
+	return observations
+}
+
+// adaptSecurityFindings wraps the existing DetectSecurityIssues output into
+// Observations without altering DetectSecurityIssues itself (KTD3). Every
+// existing detection is deterministic pattern matching against config
+// fields, so confidence is High.
+func adaptSecurityFindings(findings []common.SecurityFinding) []Observation {
+	observations := make([]Observation, 0, len(findings))
+
+	for _, f := range findings {
+		severity := Severity(f.Severity)
+		if !IsValidSeverity(severity) {
+			// common.Severity and analysis.Severity are independently defined
+			// enums; guard against drift between their vocabularies rather
+			// than silently propagating an unrecognized value.
+			severity = SeverityInfo
+		}
+
+		observations = append(observations, Observation{
+			Severity:       severity,
+			Confidence:     ConfidenceHigh,
+			Reachability:   securityFindingReachability(f),
+			Component:      f.Component,
+			Evidence:       f.Description,
+			Title:          f.Issue,
+			Description:    f.Description,
+			Recommendation: f.Recommendation,
+		})
+	}
+
+	return observations
+}
+
+// securityFindingReachability derives a reachability tag for a
+// DetectSecurityIssues finding.
+//
+// The only per-instance-rule finding DetectSecurityIssues currently emits is
+// the permissive WAN pass rule (Component "filter.rule[N]"), and that
+// detector already requires the rule to be bound to a WAN interface (via
+// RuleReachability as of the U1 consolidation), so it is deterministically
+// WAN-reachable. System-wide findings (insecure WebGUI protocol, default
+// SNMP community) are not bound to a specific interface, and correlating
+// them against exposing firewall/NAT rules is red mode's WAN-exposed-service
+// enumeration (R17), out of scope for this slice — so they are tagged Local
+// here rather than guessed.
+func securityFindingReachability(f common.SecurityFinding) Reachability {
+	if strings.HasPrefix(f.Component, "filter.rule[") {
+		return WANReachable
+	}
+
+	return Local
+}
+
+// detectInsecureManagementProtocols flags SNMP v1/v2c community-based
+// authentication as an insecure management protocol family, independent of
+// whether the configured community string happens to be the well-known
+// default ("public", already covered by DetectSecurityIssues). SNMP v1/v2c
+// transmits its community string in cleartext regardless of the string's
+// value, so any configured RO community is a distinct, additive hygiene
+// concern.
+func detectInsecureManagementProtocols(cfg *common.CommonDevice) []Observation {
+	if cfg.SNMP.ROCommunity == "" {
+		return nil
+	}
+
+	return []Observation{
+		{
+			Severity:       SeverityMedium,
+			Confidence:     ConfidenceHigh,
+			Reachability:   Local,
+			Component:      "snmpd.protocol",
+			Evidence:       "snmp community-based authentication (v1/v2c) configured",
+			Title:          "Insecure Management Protocol: SNMP v1/v2c",
+			Description:    "SNMP is configured with community-string authentication (v1/v2c), which transmits credentials in cleartext regardless of the community string value.",
+			Recommendation: "Migrate to SNMPv3 with authentication and privacy (authPriv), or disable SNMP if not required.",
+		},
+	}
+}
+
+// detectWeakCryptoDefaults flags legacy/weak TLS cipher strings or minimum
+// protocol versions configured in the device's system-wide trust settings.
+func detectWeakCryptoDefaults(cfg *common.CommonDevice) []Observation {
+	if cfg.Trust == nil {
+		return nil
+	}
+
+	var observations []Observation
+
+	// containsWeakCipherToken splits the OpenSSL cipher string on its
+	// list separators and honors the "!"/"-" exclusion prefixes, so a
+	// string that *excludes* a weak class (the standard
+	// "!aNULL:!MD5:!RC4:!3DES" hardening suffix) no longer
+	// false-positives. Confidence stays Medium rather than High because
+	// macro selectors like HIGH/ALL/DEFAULT can still implicitly pull in
+	// a weak cipher without any literal weak token for us to match; the
+	// observation is still always surfaced per R6 (confidence never
+	// gates a match).
+	if token, ok := containsWeakCipherToken(cfg.Trust.CipherString); ok {
+		observations = append(observations, Observation{
+			Severity:     SeverityMedium,
+			Confidence:   ConfidenceMedium,
+			Reachability: Local,
+			Component:    "trust.cipherstring",
+			Evidence:     fmt.Sprintf("cipherString contains weak token %q", token),
+			Title:        "Weak Crypto Default: Legacy TLS Cipher",
+			Description: fmt.Sprintf(
+				"The system-wide TLS cipher string includes the legacy/weak cipher token %q.",
+				token,
+			),
+			Recommendation: "Remove legacy cipher tokens (RC4, DES, 3DES, MD5, NULL, EXPORT) from the OpenSSL cipher string.",
+		})
+	}
+
+	if slicesContainsFold(weakTLSProtocols, cfg.Trust.MinProtocol) {
+		observations = append(observations, Observation{
+			Severity:     SeverityMedium,
+			Confidence:   ConfidenceHigh,
+			Reachability: Local,
+			Component:    "trust.minprotocol",
+			Evidence:     "minProtocol=" + cfg.Trust.MinProtocol,
+			Title:        "Weak Crypto Default: Legacy TLS Protocol Floor",
+			Description: fmt.Sprintf(
+				"The minimum TLS protocol version is set to %s, a deprecated/insecure protocol version.",
+				cfg.Trust.MinProtocol,
+			),
+			Recommendation: "Set the minimum TLS protocol version to TLSv1.2 or higher.",
+		})
+	}
+
+	return observations
+}
+
+// cipherListSeparators are the delimiters OpenSSL recognizes between
+// selectors in a cipher string (colon, comma, and whitespace).
+const cipherListSeparators = ": ,\t"
+
+// containsWeakCipherToken reports whether any actively-enabled selector in the
+// OpenSSL cipherString contains a known weak-cipher token, returning the
+// matched token for use in the finding description.
+//
+// The cipher string is split into individual selectors and each is checked
+// against its OpenSSL prefix operator: "!" and "-" exclude a cipher class (it
+// is not enabled and must not raise a finding). "+" moves any *already
+// enabled* matching ciphers to the end of the list — it never adds a cipher
+// that is not already selected by an earlier, unprefixed selector — so it
+// must not raise a finding on its own either (e.g. "HIGH:+RC4" does not
+// enable RC4 unless RC4 is also matched by "HIGH" or another unprefixed
+// selector). A weak token is reported only when it appears in a plain
+// (unprefixed) selector.
+//
+// The "!" operator differs from "-" in that it *permanently* deletes a cipher
+// class — a later plain selector can never re-enable it. So a plain "RC4"
+// following an earlier "!RC4" enables nothing ("!RC4:RC4" is safe), whereas
+// "-RC4:RC4" re-enables RC4 (the "-" removal is suppressible) and remains
+// reportable. Permanently-deleted tokens are collected in a first pass and a
+// matching plain selector is skipped.
+func containsWeakCipherToken(cipherString string) (string, bool) {
+	if cipherString == "" {
+		return "", false
+	}
+
+	selectors := strings.FieldsFunc(cipherString, func(r rune) bool {
+		return strings.ContainsRune(cipherListSeparators, r)
+	})
+
+	// First pass: collect the uppercased bodies of "!" selectors, which
+	// permanently delete a cipher class no later plain selector can restore.
+	var permanentlyDeleted []string
+	for _, selector := range selectors {
+		if selector[0] == '!' {
+			permanentlyDeleted = append(permanentlyDeleted, strings.ToUpper(selector[1:]))
+		}
+	}
+
+	for _, selector := range selectors {
+		switch selector[0] {
+		case '!', '-', '+':
+			continue
+		}
+
+		upper := strings.ToUpper(selector)
+		for _, token := range weakCipherTokens {
+			if strings.Contains(upper, token) && !tokenPermanentlyDeleted(token, permanentlyDeleted) {
+				return token, true
+			}
+		}
+	}
+
+	return "", false
+}
+
+// tokenPermanentlyDeleted reports whether a weak-cipher token was permanently
+// deleted by an earlier "!" selector, matching by the same substring rule used
+// for plain selectors (e.g. "!RC4" deletes the "RC4" token).
+func tokenPermanentlyDeleted(token string, permanentlyDeleted []string) bool {
+	for _, deleted := range permanentlyDeleted {
+		if strings.Contains(deleted, token) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// slicesContainsFold reports whether value case-insensitively matches any
+// entry in candidates.
+func slicesContainsFold(candidates []string, value string) bool {
+	if value == "" {
+		return false
+	}
+
+	for _, c := range candidates {
+		if strings.EqualFold(c, value) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// detectAnyToAnyRules flags enabled pass rules with source, destination,
+// port, and protocol all set to "any" — one Observation per matching rule.
+// This mirrors the firewall compliance plugin's FIREWALL-022 control at
+// per-rule granularity: the plugin control reports a single pass/fail for
+// the whole device, while this hygiene detector identifies which specific
+// rule(s) are the smell so blue can point at the exact config element.
+func detectAnyToAnyRules(cfg *common.CommonDevice) []Observation {
+	var observations []Observation
+
+	for i, rule := range cfg.FirewallRules {
+		if rule.Disabled || rule.Type != common.RuleTypePass {
+			continue
+		}
+
+		if !IsWideOpenPassRule(rule) {
+			continue
+		}
+
+		component := fmt.Sprintf("filter.rule[%d]", i)
+		observations = append(observations, Observation{
+			Severity:     SeverityHigh,
+			Confidence:   ConfidenceHigh,
+			Reachability: RuleReachability(rule, cfg.Interfaces),
+			Component:    component,
+			Evidence:     fmt.Sprintf("rule %d: source=any destination=any port=any protocol=any", i+1),
+			Title:        "Any-to-Any Pass Rule",
+			Description: fmt.Sprintf(
+				"Rule %d passes traffic with source, destination, port, and protocol all set to any.",
+				i+1,
+			),
+			Recommendation: "Replace any-any rules with specific source/destination/port/protocol restrictions.",
+		})
+	}
+
+	return observations
+}
+
+// detectDisabledLogging flags remote syslog forwarding that is enabled but
+// does not include firewall filter log messages, meaning allowed/denied
+// traffic decisions are not captured in the forwarded log stream.
+func detectDisabledLogging(cfg *common.CommonDevice) []Observation {
+	if !cfg.Syslog.Enabled || cfg.Syslog.FilterLogging {
+		return nil
+	}
+
+	return []Observation{
+		{
+			Severity:       SeverityMedium,
+			Confidence:     ConfidenceHigh,
+			Reachability:   Local,
+			Component:      "syslog.filterlogging",
+			Evidence:       "syslog.enabled=true syslog.filterLogging=false",
+			Title:          "Disabled Logging: Firewall Filter Events Not Forwarded",
+			Description:    "Remote syslog forwarding is enabled, but firewall filter log messages are not included, so allow/deny decisions are not captured off-box.",
+			Recommendation: "Enable filter logging under the remote syslog configuration so firewall decisions are forwarded.",
+		},
+	}
+}
+
+// detectShadowedRules adapts each finding from the shared shadow-detection
+// core (DetectShadowedRules, U6) into an Observation — Consumer 3 of the
+// one-core/three-consumer design (ADR-0004, KTD-7). Severity and Confidence
+// are taken directly from the core's KTD-6 severity matrix; Reachability is
+// independently derived via RuleReachability on the shadowed (loser) rule, so
+// a WAN-reachable Security-class shadow also surfaces as a red-mode attack
+// surface through generateRedReport's existing WAN filter — intended, not
+// red-specific logic (KTD-7).
+func detectShadowedRules(cfg *common.CommonDevice) []Observation {
+	shadows := DetectShadowedRules(cfg)
+	if len(shadows) == 0 {
+		return nil
+	}
+
+	observations := make([]Observation, 0, len(shadows))
+
+	for _, f := range shadows {
+		observations = append(observations, shadowObservation(cfg, f))
+	}
+
+	return observations
+}
+
+// detectUnusedObjects adapts each unused named-object finding
+// (DetectUnusedObjects, U6) into an Observation — the audit-findings consumer
+// for issue #203. Every unused alias becomes one hygiene Observation carrying
+// the hedged remediation.
+func detectUnusedObjects(cfg *common.CommonDevice) []Observation {
+	unused := DetectUnusedObjects(cfg)
+	if len(unused) == 0 {
+		return nil
+	}
+
+	observations := make([]Observation, 0, len(unused))
+
+	for _, f := range unused {
+		observations = append(observations, unusedObservation(f))
+	}
+
+	return observations
+}
+
+// unusedObservation converts a single common.UnusedObjectFinding into an
+// Observation. Severity falls back to SeverityInfo if the finding ever carries
+// a value outside the shared severity vocabulary (mirrors shadowObservation's
+// drift guard). Unused objects are a hygiene finding: Reachability is Local and
+// Confidence is High, because the typed-ref root walk is exact.
+func unusedObservation(f common.UnusedObjectFinding) Observation {
+	severity := Severity(f.Severity)
+	if !IsValidSeverity(severity) {
+		severity = SeverityInfo
+	}
+
+	description := fmt.Sprintf(
+		"Named object %q (%s) is defined but not referenced by any policy.",
+		f.Name, f.Type,
+	)
+	if f.Description != "" {
+		description += fmt.Sprintf(" Configured description: %q.", f.Description)
+	}
+
+	return Observation{
+		Severity:     severity,
+		Confidence:   ConfidenceHigh,
+		Reachability: Local,
+		Component:    fmt.Sprintf("namedObject[%s]", f.Name),
+		Evidence: fmt.Sprintf(
+			"%s object with %d member(s), no policy reference",
+			f.Type, f.MemberCount,
+		),
+		Title:          "Unused Named Object (Alias)",
+		Description:    description,
+		Recommendation: f.Recommendation,
+	}
+}
+
+// shadowObservation converts a single common.ShadowedRuleFinding into an
+// Observation. Severity/Confidence fall back to safe defaults if the shadow
+// core ever emits a value outside the shared vocabularies, guarding against
+// drift between the two independently-defined enums (mirrors
+// adaptSecurityFindings' same guard for DetectSecurityIssues).
+func shadowObservation(cfg *common.CommonDevice, f common.ShadowedRuleFinding) Observation {
+	severity := Severity(f.Severity)
+	if !IsValidSeverity(severity) {
+		severity = SeverityInfo
+	}
+
+	confidence := Confidence(f.Confidence)
+	if !IsValidConfidence(confidence) {
+		confidence = ConfidenceHigh
+	}
+
+	reachability := Local
+	if f.RuleIndex >= 0 && f.RuleIndex < len(cfg.FirewallRules) {
+		reachability = RuleReachability(cfg.FirewallRules[f.RuleIndex], cfg.Interfaces)
+	}
+
+	return Observation{
+		Severity:     severity,
+		Confidence:   confidence,
+		Reachability: reachability,
+		Component:    fmt.Sprintf("filter.rule[%d]", f.RuleIndex),
+		Evidence: fmt.Sprintf(
+			"shadowed by rule %d (filter.rule[%d])",
+			f.ShadowedByIndex+1, f.ShadowedByIndex,
+		),
+		Title:          shadowObservationTitle(f.ImpactClass),
+		Description:    f.Description,
+		Recommendation: f.Recommendation,
+	}
+}
+
+// shadowObservationTitle renders a short, human-readable title for a shadow
+// Observation keyed off the finding's impact class (KTD-6/R12).
+func shadowObservationTitle(impactClass common.ImpactClass) string {
+	switch impactClass {
+	case common.ImpactClassSecurity:
+		return "Shadowed Firewall Rule: Security Deny Bypassed"
+	case common.ImpactClassTroubleshooting:
+		return "Shadowed Firewall Rule: Intended Rule Never Takes Effect"
+	default: // common.ImpactClassHygiene
+		return "Shadowed Firewall Rule: Redundant Coverage"
+	}
+}

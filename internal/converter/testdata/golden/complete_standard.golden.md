@@ -3,8 +3,9 @@
 - **Hostname**: comprehensive-firewall
 - **Domain**: security.local
 - **Platform**: OPNsense 24.1.2
-- **Generated On**: 2026-04-02T23:55:21-04:00
-- **Parsed By**: opnDossier vdev
+- **Generated On**: 2026-01-02T15:04:05Z
+- **Parsed By**: opnDossier vtest
+
 ## Table of Contents
 - [System Configuration](#system-configuration)
 - [Interfaces](#interfaces)
@@ -15,6 +16,7 @@
 - [System Users](#system-users)
 - [Services & Daemons](#service-configuration)
 - [System Tunables](#system-tunables)
+
 ## System Configuration
 ### Basic Information
 **Hostname**: comprehensive-firewall
@@ -23,9 +25,9 @@
   
 **Optimization**: aggressive
   
-**Timezone**: America/New_York
+**Timezone**: America/New\_York
   
-**Language**: en_US
+**Language**: en\_US
   
 ### Web GUI Configuration
 **Protocol**: https
@@ -177,6 +179,7 @@
 **Inbound Rules**: 2
 > [!WARNING]  
 > NAT reflection is enabled, which may allow internal clients to access internal services via external IP addresses. Consider disabling if not needed.
+
 #### Outbound NAT (Source Translation)
 | # | Direction | Interface | Source | Destination | Target | Protocol | Description | Status |
 |---------|---------|---------|---------|---------|---------|---------|---------|---------|
@@ -190,6 +193,7 @@
 
 > [!WARNING]  
 > Inbound NAT rules (port forwarding) increase the attack surface by exposing internal services to external networks. Ensure these rules are necessary and properly secured.
+
 ### Firewall Rules
 | # | Interface | Action | IP Ver | Proto | Source | Destination | Target | Source Port | Dest Port | Enabled | Description |
 |---------|---------|---------|---------|---------|---------|---------|---------|---------|---------|---------|---------|
@@ -204,7 +208,7 @@
 ### DHCP Server
 | Interface | Enabled | Gateway | Range Start | Range End | DNS | WINS | NTP |
 |---------|---------|---------|---------|---------|---------|---------|---------|
-| lan | ✓ | 192.168.100.1 | 192.168.100.50 | 192.168.100.199 | 192.168.100.1 |  |  |
+| lan | ✓ | 192.168.100.1 | 192.168.100.50 | 192.168.100.199 | 192.168.100.1, 9.9.9.9 |  |  |
 | guest | ✓ | 172.16.1.1 | 172.16.1.50 | 172.16.1.199 | 1.1.1.1 |  |  |
 
 ### DNS Resolver (Unbound)
@@ -215,7 +219,7 @@
   
 **System Contact**: security-team@company.com
   
-**Read-Only Community**: public_readonly_v3
+**Read-Only Community**: public\_readonly\_v3
   
 ### NTP
 **Preferred Server**: time.nist.gov

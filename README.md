@@ -4,9 +4,9 @@
 
 ## Overview
 
-opnDossier is a command-line tool for network operators and security professionals working with OPNsense and pfSense firewalls. Transform complex XML configuration files into clear, readable documentation and identify security issues, misconfigurations, and optimization opportunities.
+opnDossier is a command-line tool for network operators and security professionals who work with OPNsense and pfSense firewalls. It turns XML config files into readable documentation and flags security issues, misconfigurations, and dead firewall rules.
 
-Built for offline operation in secure environments - no external dependencies, no telemetry, complete airgapped support.
+It runs entirely offline, with no external dependencies and no telemetry, so it works in fully airgapped environments.
 
 ### What It Does
 
@@ -14,7 +14,10 @@ Built for offline operation in secure environments - no external dependencies, n
 - **Dead Rule Detection** - Find unreachable firewall rules and unused interfaces
 - **Configuration Validation** - Comprehensive checks for misconfigurations and best-practice issues
 - **Multi-Format Export** - Convert to markdown documentation, JSON, or YAML for integration
-- **Offline Operation** - Works completely offline, perfect for airgapped networks
+- **Offline Operation** - Works completely offline, suitable for airgapped networks
+
+> [!NOTE]
+> pfSense support is strong for core firewall and service areas, but some report and audit sections are still in progress. If you work with pfSense, see the [device support matrix](docs/user-guide/device-support-matrix.md) for current feature-by-feature coverage. When a pfSense area is not yet supported, opnDossier warns during processing so you can tell the difference between a product gap and a missing configuration.
 
 ## Quick Start
 
@@ -26,17 +29,19 @@ Download pre-built binaries for Linux, macOS, or Windows from [releases](https:/
 go install github.com/EvilBit-Labs/opnDossier@latest
 ```
 
+> `go install` names the binary `opnDossier` after the module path. Every other install method ships it as `opndossier`, which is the name used throughout these examples — rename it, or install via Homebrew or a release archive.
+
 ### Basic Usage
 
 ```bash
 # Generate configuration documentation
-opnDossier convert config.xml -o report.md
+opndossier convert config.xml -o report.md
 
 # Run security audit (blue mode is default)
-opnDossier audit config.xml
+opndossier audit config.xml
 
 # Display config in terminal
-opnDossier display config.xml
+opndossier display config.xml
 ```
 
 ### Example Output
@@ -131,15 +136,15 @@ Built-in validation against security and operational best practices.
 ### Output & Export
 
 - **Multi-format export** - Generate markdown documentation, JSON, or YAML output
-- **Terminal display** - Rich terminal output with syntax highlighting and theme support
+- **Terminal display** - Syntax-highlighted terminal output with theme support
 - **File export** - Save processed configurations with overwrite protection
 - **International character support** - UTF-8, US-ASCII, ISO-8859-1, and Windows-1252 input encodings
 
 ### Performance & Architecture
 
 - **Streaming processing** - Memory-efficient handling of large configuration files
-- **Fast & lightweight** - Built with Go for performance and reliability
-- **Offline operation** - Works completely offline, perfect for airgapped environments
+- **Fast & lightweight** - A single static Go binary with no runtime dependencies
+- **Offline operation** - Works completely offline, suitable for airgapped environments
 - **Cross-platform** - Native binaries for Linux, macOS, and Windows
 
 ### Security & Privacy
@@ -163,7 +168,7 @@ Extract and run:
 
 ```bash
 tar -xzf opnDossier-*.tar.gz
-./opnDossier --help
+./opndossier --help
 ```
 
 ### Install via Go
@@ -179,10 +184,20 @@ go install github.com/EvilBit-Labs/opnDossier@latest
 ```bash
 git clone https://github.com/EvilBit-Labs/opnDossier.git
 cd opnDossier
-go build -o opnDossier main.go
+go build -o opndossier main.go
 ```
 
 For development builds with additional tooling, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+If you plan to contribute, install the pre-commit and commit-msg git hooks so fast local checks run automatically:
+
+```bash
+just install   # runs mise install, installs hook types, tidies modules
+# or, manually:
+mise exec -- pre-commit install --hook-type pre-commit --hook-type commit-msg
+```
+
+Run `just ci-check` manually before pushing for the full quality bar (lint, tests, race detector). See [CONTRIBUTING.md §Development Setup](CONTRIBUTING.md#development-setup) for details.
 
 ## Usage Examples
 
@@ -190,52 +205,52 @@ For development builds with additional tooling, see [CONTRIBUTING.md](CONTRIBUTI
 
 ```bash
 # Run blue team defensive audit (default mode)
-opnDossier audit config.xml
+opndossier audit config.xml
 
 # Blue team audit with specific compliance plugins
-opnDossier audit config.xml --plugins stig,sans
+opndossier audit config.xml --plugins stig,sans
 
 # Red team attack surface analysis
-opnDossier audit config.xml --mode red
+opndossier audit config.xml --mode red
 
 # Export audit findings to JSON for automation/integration
-opnDossier audit -f json config.xml -o findings.json
+opndossier audit -f json config.xml -o findings.json
 ```
 
 ### Configuration Documentation
 
 ```bash
 # Convert OPNsense or pfSense config to markdown documentation
-opnDossier convert config.xml -o firewall-docs.md
+opndossier convert config.xml -o firewall-docs.md
 
 # Generate YAML for configuration management tools
-opnDossier convert -f yaml config.xml -o config.yaml
+opndossier convert -f yaml config.xml -o config.yaml
 
 # Display in terminal with custom wrap width
-opnDossier display --wrap 100 config.xml
+opndossier display --wrap 100 config.xml
 ```
 
 ### Validation
 
 ```bash
 # Validate configuration file
-opnDossier validate config.xml
+opndossier validate config.xml
 
 # Validate before converting
-opnDossier validate config.xml && opnDossier convert config.xml -o report.md
+opndossier validate config.xml && opndossier convert config.xml -o report.md
 ```
 
 ### Advanced Options
 
 ```bash
 # Include system tunables in report
-opnDossier convert config.xml -o comprehensive.md --include-tunables
+opndossier convert config.xml -o comprehensive.md --include-tunables
 
 # Verbose output for troubleshooting
-opnDossier --verbose convert config.xml
+opndossier --verbose convert config.xml
 
 # Quiet mode - only show errors
-opnDossier --quiet convert config.xml -o output.md
+opndossier --quiet convert config.xml -o output.md
 ```
 
 ## Configuration
@@ -271,14 +286,14 @@ output_file: ./output.md
 
 ```bash
 # Using CLI flags
-opnDossier --verbose convert config.xml
+opndossier --verbose convert config.xml
 
 # Using environment variables
 export OPNDOSSIER_VERBOSE=true
-opnDossier convert config.xml
+opndossier convert config.xml
 
 # Using config file (automatically loaded from ~/.opnDossier.yaml)
-opnDossier convert config.xml
+opndossier convert config.xml
 ```
 
 ## Output Formats
@@ -293,9 +308,9 @@ opnDossier supports multiple output formats for different use cases:
 Specify format with `-f` or `--format` flag:
 
 ```bash
-opnDossier convert -f json config.xml -o output.json
-opnDossier convert -f yaml config.xml -o output.yaml
-opnDossier convert -f markdown config.xml -o output.md  # default
+opndossier convert -f json config.xml -o output.json
+opndossier convert -f yaml config.xml -o output.yaml
+opndossier convert -f markdown config.xml -o output.md  # default
 ```
 
 ## GitHub Actions
@@ -321,30 +336,30 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Audit OPNsense config
-        # No release tags exist yet — use @main until v1 is tagged
-        uses: EvilBit-Labs/opnDossier@main
+        uses: EvilBit-Labs/opnDossier@v1.7.2
         with:
           command: audit
           config-file: config.xml
 ```
 
+See [Pinning](#pinning) for the recommended way to lock this reference in production CI.
+
 ### Inputs
 
-| Input         | Required | Default  | Description                                                                              |
-| ------------- | -------- | -------- | ---------------------------------------------------------------------------------------- |
-| `command`     | No       | `audit`  | Sub-command: `audit`, `convert`, `diff`, `display`, `sanitize`, `validate`, or `version` |
-| `config-file` | **Yes**  | —        | Path to OPNsense or pfSense `config.xml` relative to the workspace root                  |
-| `format`      | No       | —        | Output format for `convert`/`audit`: `markdown`, `json`, `yaml`, `text`, or `html`       |
-| `output`      | No       | —        | Path to write the output file, relative to the workspace root                            |
-| `args`        | No       | —        | Additional arguments split on whitespace (quoted strings with spaces are not preserved)  |
-| `version`     | No       | `latest` | Image tag to pull (e.g. `v1.2.0`); defaults to the latest release                        |
+| Input         | Required | Default  | Description                                                                                                                          |
+| ------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `command`     | No       | `audit`  | Sub-command: `audit`, `convert`, `diff`, `display`, `sanitize`, `validate`, or `version`                                             |
+| `config-file` | **Yes**  | —        | Path to OPNsense or pfSense `config.xml` relative to the workspace root                                                              |
+| `format`      | No       | —        | Output format for `convert`/`audit`: `markdown`, `json`, `yaml`, `text`, or `html`                                                   |
+| `output`      | No       | —        | Path to write the output file, relative to the workspace root                                                                        |
+| `args`        | No       | —        | Additional arguments split on whitespace (quoted strings with spaces are not preserved)                                              |
+| `version`     | No       | `v1.7.2` | Image tag to pull (e.g. `v1.7.2`); defaults to the current release tag. `latest` is accepted but unpinned (see [Pinning](#pinning)). |
 
 ### Export findings to JSON
 
 ```yaml
   - name: Export audit findings
-  # No release tags exist yet — use @main until v1 is tagged
-    uses: EvilBit-Labs/opnDossier@main
+    uses: EvilBit-Labs/opnDossier@v1.7.2
     with:
       command: audit
       config-file: firewall/config.xml
@@ -362,14 +377,38 @@ jobs:
 
 ```yaml
   - name: Generate firewall documentation
-  # No release tags exist yet — use @main until v1 is tagged
-    uses: EvilBit-Labs/opnDossier@main
+    uses: EvilBit-Labs/opnDossier@v1.7.2
     with:
       command: convert
       config-file: config.xml
       format: markdown
       output: docs/firewall.md
 ```
+
+### Pinning
+
+GitHub Action references should be pinned with intention. The three options, in order of preference for production CI:
+
+**Recommended (production CI): pin to a full commit SHA.** A SHA is immutable — tags can, in theory, be force-pushed; commit SHAs cannot. Include the matching version tag as a trailing comment so humans can still tell what they are running.
+
+```yaml
+  - name: Audit OPNsense config
+  # v1.7.2 — verify SHA against the release at https://github.com/EvilBit-Labs/opnDossier/releases/tag/v1.7.2
+    uses: EvilBit-Labs/opnDossier@a5dae2ff69f85f11e18692f45fb6882da2c9b3c0
+    with:
+      command: audit
+      config-file: config.xml
+```
+
+**Acceptable (most users): pin to a version tag.** This is what the Quick Start snippet above uses. You trust that the maintainers will not move published tags (we don't), and in exchange you get a readable reference and automatic patch-level fixes when you bump.
+
+```yaml
+  - uses: EvilBit-Labs/opnDossier@v1.7.2
+```
+
+**Not recommended for production: `@main` or `@latest`.** Both are moving targets: `@main` follows the default branch (may contain unreleased changes); `@latest` is only meaningful as an image tag on `ghcr.io/evilbit-labs/opndossier` and will pull whatever the registry currently points `latest` at. Use these only in throwaway sandboxes, never in CI that protects production configuration.
+
+The `version:` input of the action follows the same three levels and defaults to the current release tag (`v1.7.2`). Override it only if you understand the tradeoff.
 
 ### Using the Docker image directly
 
@@ -387,11 +426,132 @@ docker run --rm \
   audit config.xml
 ```
 
+## Using as a Go Library
+
+opnDossier's `pkg/` packages are importable by other Go modules. The typical consumer flow is: parse an OPNsense or pfSense `config.xml` into a vendor-specific document, convert it to the platform-agnostic `CommonDevice` model, and work with that.
+
+Module path: `github.com/EvilBit-Labs/opnDossier`
+
+Go version: 1.26+ (opnDossier supports the current and previous stable Go releases — N and N-1 — matching Go's upstream policy).
+
+See [docs/development/public-api.md](docs/development/public-api.md) for the full public API classification, stability policy, and semver rules.
+
+### Quick Start
+
+For consumers that already have a parsed schema document (for example, configuration generators that build one in-memory), call `ConvertDocument` directly. This is the idiomatic consumer entry point — no blank imports, no factory wiring. See [docs/development/public-api.md § Idiomatic consumer entry point](docs/development/public-api.md#idiomatic-consumer-entry-point) for the full contract.
+
+```go
+package main
+
+import (
+    "encoding/xml"
+    "fmt"
+    "os"
+
+    opnsenseparser "github.com/EvilBit-Labs/opnDossier/pkg/parser/opnsense"
+    opnschema "github.com/EvilBit-Labs/opnDossier/pkg/schema/opnsense"
+)
+
+func main() {
+    data, err := os.ReadFile("config.xml")
+    if err != nil {
+        panic(err)
+    }
+
+    var doc opnschema.OpnSenseDocument
+    if err := xml.Unmarshal(data, &doc); err != nil {
+        panic(err)
+    }
+
+    device, warnings, err := opnsenseparser.ConvertDocument(&doc)
+    if err != nil {
+        panic(err)
+    }
+    for _, w := range warnings {
+        fmt.Printf("[%s] %s: %s (value=%q)\n", w.Severity, w.Field, w.Message, w.Value)
+    }
+
+    fmt.Printf("device type:  %s\n", device.DeviceType)
+    fmt.Printf("hostname:     %s.%s\n", device.System.Hostname, device.System.Domain)
+    fmt.Printf("rules:        %d\n", len(device.FirewallRules))
+}
+```
+
+Use `pkg/parser/pfsense` and `pkg/schema/pfsense` for pfSense configurations.
+
+### Auto-Detection via the Factory (escape hatch)
+
+When you have raw XML bytes of unknown provenance — a reader but no pre-parsed DTO — use `pkg/parser.Factory`. The factory is the auto-detection escape hatch: it peeks the XML root element and dispatches to the correct device parser. It is stable, but treat it as a convenience wrapper around `ConvertDocument` rather than the primary path. The factory requires two blank imports because device parsers self-register from their `init()` functions, and Go only runs `init()` for imported packages:
+
+```go
+import (
+    "github.com/EvilBit-Labs/opnDossier/pkg/model"
+    "github.com/EvilBit-Labs/opnDossier/pkg/parser"
+
+    _ "github.com/EvilBit-Labs/opnDossier/pkg/parser/opnsense" // registers "opnsense"
+    _ "github.com/EvilBit-Labs/opnDossier/pkg/parser/pfsense"  // registers "pfsense"
+)
+
+factory := parser.NewFactory(myXMLDecoder)
+device, warnings, err := factory.CreateDevice(ctx, reader, model.DeviceTypeUnknown, false)
+```
+
+`myXMLDecoder` must satisfy `parser.OPNsenseXMLDecoder`. The interface is typed to `*schema.OpnSenseDocument`, so the OPNsense parser is the only bundled consumer — the pfSense parser accepts the decoder for signature compatibility but manages its own XML decoding. Consumers typically wrap `encoding/xml` themselves using `parser.NewSecureXMLDecoder`, which applies opnDossier's XML-bomb and XXE hardening. If no parser packages are imported, `CreateDevice` returns an error containing the substring `"ensure parser packages are imported"` — that hint is covered by a regression test and safe for tooling to match on.
+
+### Handling `ConversionWarning`
+
+Every converter returns a `[]model.ConversionWarning` alongside the device. Warnings are non-fatal — they flag fields that did not round-trip perfectly (unrecognized enum values, truncated collections, orphan cross-references). Severity is a triage signal, not a compliance verdict:
+
+| Severity   | Meaning                                                  |
+| ---------- | -------------------------------------------------------- |
+| `critical` | Data loss or corruption in the converted output.         |
+| `high`     | Material gap or silently altered behavior.               |
+| `medium`   | Partial data preservation (e.g., truncated collections). |
+| `low`      | Cosmetic or best-effort conversion gap.                  |
+| `info`     | Normal observation about the conversion.                 |
+
+Log all warnings; treat `high` and above as signals to investigate the source config before trusting the output.
+
+### Handling Secrets When Exporting `CommonDevice`
+
+`CommonDevice` carries plaintext secrets sourced from the firewall configuration. If you serialize a `CommonDevice` to JSON, YAML, or any other format, **these secrets will appear in cleartext unless you redact them yourself.** opnDossier's CLI has redaction logic for its own `convert` and `sanitize` commands, but that code lives in `internal/` and is not exposed as a public API.
+
+The secret-bearing fields are:
+
+| Struct                       | Field                            |
+| ---------------------------- | -------------------------------- |
+| `model.Certificate`          | `PrivateKey`                     |
+| `model.CertificateAuthority` | `PrivateKey`                     |
+| `model.WireGuardClient`      | `PSK`                            |
+| `model.APIKey`               | `Secret`                         |
+| `model.HighAvailability`     | `Password`                       |
+| `model.SNMPConfig`           | `ROCommunity`                    |
+| `model.DHCPAdvancedV6`       | `AdvDHCP6KeyInfoStatementSecret` |
+
+If you add a new secret-bearing field to `CommonDevice`, update this table in the same PR.
+
+Notes on fields that are **not** in this table:
+
+- OpenVPN TLS auth / static-key material (raw XML fields on the OPNsense/pfSense schema types) is dropped by the converter and never appears on `CommonDevice` — it can only leak via the raw-XML sanitize path (see `internal/sanitizer` rules, which the CLI applies). Library consumers that work exclusively with `CommonDevice` cannot accidentally emit OpenVPN TLS key material.
+- `model.IPsecConfig.KeyPairs` and `model.IPsecConfig.PreSharedKeys` currently carry UUID references to the OPNsense `Ipsec/KeyPairs` and `Ipsec/PreSharedKey` MVC models, not raw key material. They are intentionally omitted from the table above. If a future OPNsense schema revision ever stores raw key bytes in these fields, they must be added here and to the CLI redaction logic in the same PR.
+- pfSense `IPsecPhase1.PreSharedKey` (a scalar raw key on the pfSense XML schema) is intentionally not mapped into `model.IPsecPhase1Tunnel`; see `pkg/parser/pfsense/converter_services.go` and the `TestConverter_IPsecPhase1_PreSharedKeyExclusion` regression test.
+
+Recommended approaches, in order of preference:
+
+1. **Invoke the opnDossier CLI as a subprocess.** `opndossier convert --format json` and `opndossier sanitize` apply the full redaction pipeline, including the field-pattern-based sanitizer. Safest for operators who need a hardened output.
+2. **Redact in-place before serializing.** Walk the `CommonDevice` and set each secret field to `""` (or a marker like `"[REDACTED]"`) before passing it to `json.Marshal` or `yaml.Marshal`. Straightforward for known consumers that own the export path.
+3. **Implement a custom `json.Marshaler`.** Define a wrapper type that shallow-copies `CommonDevice`, zeros the secret fields on the copy, then delegates to `json.Marshal`. Useful when the export is deep inside a library you control.
+
+Do not rely on struct tags for redaction — `json:"privateKey,omitempty"` controls field names and omit-empty behavior, not whether the field is serialized at all.
+
+If you add a new field to `CommonDevice` that carries a secret, update this table and update the CLI's redaction logic in the same change. See [GOTCHAS § 13.1](GOTCHAS.md) for the testing pitfall with multiline secrets (JSON escapes newlines, so raw-string `NotContains` assertions pass vacuously — always unmarshal and assert on field values).
+
 ## Documentation
 
 - **[User Guide](docs/user-guide/)** - Installation, usage, and configuration
 - **[Security Documentation](docs/security/)** - Vulnerability scanning and security features
-- **[API Reference](docs/api.md)** - Detailed API documentation
+- **[API Reference](docs/development/api.md)** - Detailed API documentation
+- **[Public Go API](docs/development/public-api.md)** - Stability policy and semver rules for library consumers
 - **[Examples](docs/examples/)** - Real-world usage examples
 
 For developers:
@@ -419,6 +579,10 @@ opnDossier is designed with security as a first-class concern:
 - **No telemetry** - No data collection or external communication
 - **Secure by design** - Input validation, sanitization, and SBOM generation
 - **Automated scanning** - Daily vulnerability scans and dependency audits in CI/CD
+
+### Dynamic plugin trust model
+
+Dynamic compliance plugins are opt-in. The `--plugin-dir` flag on `opndossier audit` loads every `.so` file in the directory via Go's standard `plugin.Open()` mechanism; those plugins run with full opnDossier process privileges and are not signature-verified. Only point `--plugin-dir` at directories whose contents you build, review, and control — never at a world-writable path. A stderr warning is emitted whenever `--plugin-dir` is supplied. For the full threat model and hardening guidance, see [audit command — Dynamic Plugin Security](docs/user-guide/commands/audit.md#dynamic-plugin-security).
 
 For security vulnerabilities, please see our [security policy](SECURITY.md).
 

@@ -71,16 +71,29 @@ func TestRedact_SubnetField_NonCIDRValue(t *testing.T) {
 
 	engine := NewRuleEngine(ModeAggressive)
 
-	// "subnet" field with non-CIDR values must pass through unchanged.
-	nonSubnetValues := []string{"255.255.255.0", "office network", "24", ""}
-	for _, val := range nonSubnetValues {
-		result := engine.Redact("subnet", val)
-		if result != val {
+	// A "subnet" field holding a non-CIDR value must never be redacted as a
+	// subnet. It may still be claimed by a later rule: FieldGuard declines the
+	// match rather than consuming it, so scanning continues. That is the point
+	// of the guard, and these two cases show both outcomes.
+	for _, val := range []string{"office network", "24", ""} {
+		if result := engine.Redact("subnet", val); result != val {
 			t.Errorf("Redact('subnet', %q) = %q, want unchanged", val, result)
 		}
 	}
 
-	// "subnet" field with a real CIDR should still be redacted.
+	// "255.255.255.0" is a netmask, not a CIDR, so subnet_field declines it --
+	// and the value-based public-IP rule then claims it, exactly as it already
+	// did in moderate mode. Before FieldGuard, subnet_field consumed the match
+	// and returned the value untouched, so aggressive leaked a value moderate
+	// redacted. Asserting the redaction here is what pins that fix.
+	if got := engine.Redact("subnet", "255.255.255.0"); got == "255.255.255.0" {
+		t.Errorf("Redact('subnet', '255.255.255.0') = %q, want it claimed by the public-IP rule", got)
+	}
+	if got := NewRuleEngine(ModeModerate).Redact("subnet", "255.255.255.0"); got == "255.255.255.0" {
+		t.Errorf("moderate must redact it too, else the monotonicity premise is wrong; got %q", got)
+	}
+
+	// A real CIDR is still redacted as a subnet.
 	result := engine.Redact("subnet", "192.168.1.0/24")
 	if result != "[REDACTED-SUBNET]" {
 		t.Errorf("Redact('subnet', '192.168.1.0/24') = %q, want '[REDACTED-SUBNET]'", result)
@@ -109,6 +122,45 @@ func TestRedact_OTPSeed(t *testing.T) {
 			result := engine.Redact(tt.field, "TOTP_BASE32_SEED")
 			if result != redactedSecretValue {
 				t.Errorf("Redact(%q, otp seed) = %q, want %q", tt.field, result, redactedSecretValue)
+			}
+		})
+	}
+}
+
+func TestRedact_NetBirdSetupKey_RedactsSecret(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		mode  Mode
+		field string
+	}{
+		{ModeAggressive, "setupKey"},
+		{ModeModerate, "setupKey"},
+		{ModeMinimal, "setupKey"},
+		{ModeAggressive, "setup_key"},
+		{ModeModerate, "setup_key"},
+		{ModeMinimal, "setup_key"},
+		{ModeAggressive, "setup-key"},
+		{ModeModerate, "setup-key"},
+		{ModeMinimal, "setup-key"},
+		{ModeAggressive, "OPNsense.netbird.authentication.setupKey"},
+		{ModeMinimal, "netbird.authentication.setupKey"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.mode)+"_"+tt.field, func(t *testing.T) {
+			t.Parallel()
+			engine := NewRuleEngine(tt.mode)
+			should, rule := engine.ShouldRedactField(tt.field)
+			if !should {
+				t.Fatalf("ShouldRedactField(%q) = false, want true", tt.field)
+			}
+			if rule.Name != "secret" {
+				t.Fatalf("ShouldRedactField(%q) matched %q, want secret (not private_key)", tt.field, rule.Name)
+			}
+			result := engine.Redact(tt.field, "A1B2C3D4-E5F6-7890-ABCD-EF1234567890")
+			if result != redactedSecretValue {
+				t.Errorf("Redact(%q, setup key) = %q, want %q", tt.field, result, redactedSecretValue)
 			}
 		})
 	}
@@ -305,14 +357,14 @@ func TestRedact_IPAddrField(t *testing.T) {
 		value string
 		want  string
 	}{
-		{ModeAggressive, "ipaddr", "192.168.1.100", "10.0.0.1"},
+		{ModeAggressive, "ipaddr", "192.168.1.100", expectedRedactedPrivateIP1},
 		{ModeModerate, "ipaddr", "192.168.1.100", "192.168.1.100"},
 		{ModeMinimal, "ipaddr", "192.168.1.100", "192.168.1.100"},
-		{ModeAggressive, "ipaddrv6", "192.168.1.100", "10.0.0.1"},
+		{ModeAggressive, "ipaddrv6", "192.168.1.100", expectedRedactedPrivateIP1},
 		{ModeModerate, "ipaddrv6", "192.168.1.100", "192.168.1.100"},
 		{ModeMinimal, "ipaddrv6", "192.168.1.100", "192.168.1.100"},
 		{ModeAggressive, "ipaddrv6", "2001:db8::1", expectedRedactedPublicIP1},
-		{ModeAggressive, "ipaddrv6", "fd00::1", "10.0.0.1"},
+		{ModeAggressive, "ipaddrv6", "fd00::1", expectedRedactedPrivateIP1},
 	}
 
 	for _, tt := range tests {
@@ -506,8 +558,69 @@ func TestShouldRedactField_OTPSeed(t *testing.T) {
 			if !should {
 				t.Errorf("ShouldRedactField(%q) = false, want true", tt.field)
 			}
-			if rule == nil {
-				t.Errorf("ShouldRedactField(%q) returned nil rule", tt.field)
+			if rule.Name == "" {
+				t.Errorf("ShouldRedactField(%q) returned zero-value rule (no Name)", tt.field)
+			}
+		})
+	}
+}
+
+// TestRuleMatchesFieldName_FieldExclusions covers the field-name counterpart to
+// FieldGuard: a rule names fields it must never claim even when one of its
+// FieldPatterns matches. FieldGuard cannot express this because it only ever
+// sees the value. See GOTCHAS.md section 19.3.
+func TestRuleMatchesFieldName_FieldExclusions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		exclusions []string
+		field      string
+		want       bool
+	}{
+		{"no exclusions leaves the match intact", nil, "ddnsdomainkeyalgorithm", true},
+		{
+			"exclusion equal to the field suppresses the match",
+			[]string{"ddnsdomainkeyalgorithm"},
+			"ddnsdomainkeyalgorithm",
+			false,
+		},
+		{
+			"exclusion anchors on the terminal segment",
+			[]string{"ddnsdomainkeyalgorithm"},
+			"dhcpd.lan.ddnsdomainkeyalgorithm",
+			false,
+		},
+		{"a mixed-case field is excluded", []string{"ddnsdomainkeyalgorithm"}, "DDNSDomainKeyAlgorithm", false},
+		{"a mixed-case exclusion still excludes", []string{"DDNSDomainKeyAlgorithm"}, "ddnsdomainkeyalgorithm", false},
+		{
+			"a mixed-case dotted path is excluded",
+			[]string{"ddnsdomainkeyalgorithm"},
+			"DHCPD.LAN.DDNSDomainKeyAlgorithm",
+			false,
+		},
+		{
+			"a substring of the terminal segment does not suppress",
+			[]string{"ddnsdomain"},
+			"ddnsdomainkeyalgorithm",
+			true,
+		},
+		{"an unrelated exclusion leaves the match intact", []string{"unrelated"}, "ddnsdomainkeyalgorithm", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rule := Rule{
+				Name:            "test_rule",
+				FieldPatterns:   []string{"domain"},
+				FieldExclusions: tt.exclusions,
+			}
+
+			if got := ruleMatchesFieldName(&rule, tt.field); got != tt.want {
+				t.Errorf("ruleMatchesFieldName(%q) with exclusions %v = %v, want %v",
+					tt.field, tt.exclusions, got, tt.want)
 			}
 		})
 	}

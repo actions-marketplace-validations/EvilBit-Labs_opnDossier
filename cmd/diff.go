@@ -137,7 +137,7 @@ func ValidDiffSections(_ *cobra.Command, _ []string, _ string) ([]string, cobra.
 var diffCmd = &cobra.Command{ //nolint:gochecknoglobals // Cobra command
 	Use:               "diff <old-config.xml> <new-config.xml>",
 	Short:             "Compare two OPNsense configuration files.",
-	GroupID:           "core",
+	GroupID:           groupCore,
 	ValidArgsFunction: ValidXMLFiles,
 	PreRunE: func(_ *cobra.Command, _ []string) error {
 		return validateDiffFlags()
@@ -145,47 +145,43 @@ var diffCmd = &cobra.Command{ //nolint:gochecknoglobals // Cobra command
 	Long: `The 'diff' command compares two OPNsense config.xml files and shows meaningful
 configuration changes in a content-aware, security-focused way.
 
-Unlike a simple XML diff, this command understands OPNsense configuration semantics:
+Unlike a raw XML text diff, this command understands OPNsense semantics:
   - Firewall rules are matched by UUID and compared structurally
-  - Interfaces are compared by name with detailed field-level changes
+  - Interfaces are compared by name with field-level change tracking
   - Static DHCP reservations are tracked by MAC address
-  - Security-impacting changes are scored by a pattern-based engine (high/medium/low)
+  - Changes are scored by a pattern-based engine (high/medium/low)
 
-OUTPUT FORMATS:
-  terminal   - Color-coded terminal output with symbols (+/-/~)
-  markdown   - Markdown formatted output for documentation
-  json       - JSON structured output for automation
-  html       - Self-contained HTML report
+OUTPUT FORMATS (--format/-f):
+  terminal  - Color-coded terminal output with +/-/~ markers (default)
+  markdown  - Markdown formatted output for documentation
+  json      - JSON structured output for automation
+  html      - Self-contained HTML report
 
-DISPLAY MODES:
-  unified      - Standard diff view (default)
-  side-by-side - Two-column comparison (terminal only)
+DISPLAY MODES (--mode/-m):
+  unified       - Standard diff view (default)
+  side-by-side  - Two-column comparison (terminal format only)
 
-SECTIONS:
-  system      - System settings (hostname, domain, timezone)
-  firewall    - Firewall rules
-  nat         - NAT configuration and port forwards
-  interfaces  - Network interfaces
-  vlans       - VLAN configuration
-  dhcp        - DHCP servers and static reservations
-  users       - User accounts
-  routing     - Static routes
+SECTION FILTERING (--section/-s):
+  Implemented: system, firewall, nat, interfaces, vlans, dhcp, users, routing
+  Placeholders (reject with a helpful error): dns, vpn, certificates
 
 ANALYSIS OPTIONS:
-  --normalize     Normalize displayed values (whitespace, IPs, ports)
-  --detect-order  Detect when rules are reordered without content changes
+  --security       Show only security-relevant changes
+  --normalize      Normalize displayed values (whitespace, IPs, ports)
+  --detect-order   Detect rule reordering without content changes
 
-SECURITY IMPACT:
-  Changes are scored by a pattern-based security engine:
-  - HIGH: Permissive rules (any-any), risky configurations
-  - MEDIUM: User changes, NAT modifications, protocol downgrades
-  - LOW: Minor modifications with limited security relevance
+SECURITY IMPACT SCORING:
+  HIGH    - Permissive rules (any-any), risky configurations
+  MEDIUM  - User changes, NAT modifications, protocol downgrades
+  LOW     - Minor modifications with limited security relevance
 
-Examples:
-  # Compare two configs with terminal output (default)
+RELATED:
+  audit      - Compliance check on a single config (no comparison)
+  convert    - Render a single config to markdown/JSON/YAML`,
+	Example: `  # Compare two configs with terminal output (default)
   opndossier diff old-config.xml new-config.xml
 
-  # Generate markdown report
+  # Generate a markdown report
   opndossier diff old-config.xml new-config.xml -f markdown -o changes.md
 
   # Compare only firewall rules
@@ -197,10 +193,7 @@ Examples:
   # Generate JSON for automation
   opndossier diff old-config.xml new-config.xml -f json | jq '.changes[]'
 
-  # Compare multiple sections
-  opndossier diff old-config.xml new-config.xml -s firewall,nat,interfaces
-
-  # Generate self-contained HTML report
+  # Generate a self-contained HTML report
   opndossier diff old-config.xml new-config.xml -f html -o report.html
 
   # Side-by-side terminal comparison

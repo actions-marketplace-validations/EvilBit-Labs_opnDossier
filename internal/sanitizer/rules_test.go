@@ -11,10 +11,11 @@ import (
 const expectedRedactedPassValue = "[REDACTED-PASSWORD]"
 
 const (
-	expectedRedactedPublicIP1 = "[REDACTED-PUBLIC-IP-1]"
-	expectedMappedHostname1   = "host-001.example.com"
-	expectedMappedEmail1      = "user1@example.com"
-	testBase64PubKey          = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+	expectedRedactedPublicIP1  = "[REDACTED-PUBLIC-IP-1]"
+	expectedRedactedPrivateIP1 = "[REDACTED-PRIVATE-IP-1]"
+	expectedMappedHostname1    = "host-001.example.com"
+	expectedMappedEmail1       = "user1@example.com"
+	testBase64PubKey           = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
 )
 
 func TestValidModes(t *testing.T) {
@@ -130,14 +131,14 @@ func TestShouldRedactField_AuthServer(t *testing.T) {
 func TestShouldRedactField_Secret(t *testing.T) {
 	engine := NewRuleEngine(ModeMinimal)
 
-	secretFields := []string{"secret", "token", "apikey", "api_key", "authkey"}
+	secretFields := []string{"secret", "token", "apikey", "api_key", "authkey", "setupkey", "setup_key", "setup-key"}
 	for _, field := range secretFields {
 		should, rule := engine.ShouldRedactField(field)
 		if !should {
 			t.Errorf("ShouldRedactField(%q) = false, want true", field)
 		}
-		if rule == nil {
-			t.Errorf("ShouldRedactField(%q) returned nil rule", field)
+		if rule.Name != "secret" {
+			t.Errorf("ShouldRedactField(%q) matched rule %q, want secret", field, rule.Name)
 		}
 	}
 }
@@ -274,8 +275,8 @@ func TestRedact_PrivateIP(t *testing.T) {
 	engine := NewRuleEngine(ModeAggressive)
 
 	result := engine.Redact("lan_ip", "192.168.1.1")
-	if result != "10.0.0.1" {
-		t.Errorf("Redact private IP = %q, want %q", result, "10.0.0.1")
+	if result != expectedRedactedPrivateIP1 {
+		t.Errorf("Redact private IP = %q, want %q", result, expectedRedactedPrivateIP1)
 	}
 }
 
@@ -628,5 +629,42 @@ func TestIsSystemUser(t *testing.T) {
 				t.Errorf("isSystemUser(%q) = %v, want %v", tt.username, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestShouldRedact_ReturnsValueNotPointer_MutationSafety pins the mutation-
+// safety contract: ShouldRedactField and ShouldRedactValue return Rule by
+// value, so callers cannot reach through a shared pointer and mutate the
+// package-level cache that cachedBuiltinRules() returns. Without this, any
+// stray assignment to a returned rule's fields (e.g., rule.Name = "x") would
+// silently reconfigure redaction for every RuleEngine in the process and
+// could race under concurrent audits.
+func TestShouldRedact_ReturnsValueNotPointer_MutationSafety(t *testing.T) {
+	t.Parallel()
+
+	// Two independent engines share the same cached rule backing.
+	e1 := NewRuleEngine(ModeAggressive)
+	e2 := NewRuleEngine(ModeAggressive)
+
+	should1, rule1 := e1.ShouldRedactField("password")
+	if !should1 || rule1.Name == "" {
+		t.Fatalf("precondition failed: ShouldRedactField(\"password\") = (%v, %q)", should1, rule1.Name)
+	}
+	originalName := rule1.Name
+
+	// Attempt to mutate the returned value. With value semantics this is a
+	// local change that cannot reach the cache.
+	rule1.Name = "mutated-by-caller"
+
+	// Second engine should still see the original name.
+	_, rule2 := e2.ShouldRedactField("password")
+	if rule2.Name != originalName {
+		t.Errorf("cache was corrupted across engines: got %q, want %q", rule2.Name, originalName)
+	}
+
+	// And a subsequent lookup on the same engine also returns the original.
+	_, rule3 := e1.ShouldRedactField("password")
+	if rule3.Name != originalName {
+		t.Errorf("cache was corrupted within engine: got %q, want %q", rule3.Name, originalName)
 	}
 }

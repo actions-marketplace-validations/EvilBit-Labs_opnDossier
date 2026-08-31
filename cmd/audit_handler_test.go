@@ -18,8 +18,8 @@ import (
 )
 
 func TestValidAuditModes(t *testing.T) {
-	t.Parallel()
-
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	completions, directive := ValidAuditModes(nil, nil, "")
 
 	assert.Len(t, completions, 2)
@@ -32,8 +32,8 @@ func TestValidAuditModes(t *testing.T) {
 }
 
 func TestValidAuditPlugins(t *testing.T) {
-	t.Parallel()
-
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	completions, directive := ValidAuditPlugins(nil, nil, "")
 
 	assert.Len(t, completions, 3)
@@ -50,8 +50,8 @@ func TestValidAuditPlugins(t *testing.T) {
 // registered in the audit registry has a corresponding entry in the
 // pluginDescriptions map used for shell completion descriptions.
 func TestPluginDescriptionsSyncWithRegistry(t *testing.T) {
-	t.Parallel()
-
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	registryNames := registryPluginNames()
 	for _, name := range registryNames {
 		_, ok := pluginDescriptions[name]
@@ -62,9 +62,11 @@ func TestPluginDescriptionsSyncWithRegistry(t *testing.T) {
 
 // TestMapAuditReportToComplianceResults verifies the mapping function
 // correctly converts audit.Report data into common.ComplianceResults.
+//
+//nolint:funlen // test table or data declaration; length is in data not logic
 func TestMapAuditReportToComplianceResults(t *testing.T) {
-	t.Parallel()
-
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	tests := []struct {
 		name   string
 		report *audit.Report
@@ -469,7 +471,8 @@ func TestMapAuditReportToComplianceResults(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+			// See GOTCHAS §1.1.
 			result := mapAuditReportToComplianceResults(tt.report)
 			if tt.report == nil {
 				assert.Nil(t, result, "nil report should return nil result")
@@ -651,8 +654,8 @@ func TestMapControls_JSONRoundTrip(t *testing.T) {
 // generator pipeline. It asserts that the rendered output contains
 // the audit section from the builder layer.
 func TestHandleAuditMode_EndToEnd(t *testing.T) {
-	t.Parallel()
-
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	logger, err := logging.New(logging.Config{Level: "warn"})
 	require.NoError(t, err)
 
@@ -683,13 +686,13 @@ func TestHandleAuditMode_EndToEnd(t *testing.T) {
 	assert.Contains(t, result, "stig")
 
 	// handleAuditMode must NOT mutate the input device (immutability rule)
-	assert.Nil(t, device.ComplianceChecks, "input device should not be mutated")
+	assert.Nil(t, device.ComplianceResults, "input device should not be mutated")
 }
 
 // TestHandleAuditMode_BlueModeNoPluginsRunsAll verifies that bare blue mode
 // (no --plugins) produces populated compliance results rather than silently
 // skipping compliance. This is a regression test for the documented default
-// where `opnDossier audit config.xml --mode blue` runs all available plugins.
+// where `opndossier audit config.xml --mode blue` runs all available plugins.
 func TestHandleAuditMode_BlueModeNoPluginsRunsAll(t *testing.T) {
 	// Do NOT use t.Parallel() — exercises audit pipeline with package-level flag state.
 	logger, err := logging.New(logging.Config{Level: "warn"})
@@ -715,12 +718,12 @@ func TestHandleAuditMode_BlueModeNoPluginsRunsAll(t *testing.T) {
 	result, err := handleAuditMode(context.Background(), device, auditOpts, opt, logger)
 	require.NoError(t, err)
 
-	// Parse JSON and verify complianceChecks is populated with plugin results
+	// Parse JSON and verify complianceResults is populated with plugin results
 	var parsed map[string]any
 	require.NoError(t, json.Unmarshal([]byte(result), &parsed))
 
-	checks, ok := parsed["complianceChecks"].(map[string]any)
-	require.True(t, ok, "complianceChecks should be an object")
+	checks, ok := parsed["complianceResults"].(map[string]any)
+	require.True(t, ok, "complianceResults should be an object")
 	assert.Equal(t, "blue", checks["mode"])
 
 	// pluginResults must contain all three built-in plugins
@@ -733,13 +736,13 @@ func TestHandleAuditMode_BlueModeNoPluginsRunsAll(t *testing.T) {
 	}
 
 	// Input device must not be mutated (immutability rule)
-	assert.Nil(t, device.ComplianceChecks, "input device should not be mutated")
+	assert.Nil(t, device.ComplianceResults, "input device should not be mutated")
 }
 
 // TestHandleAuditMode_StructuredFormats verifies that audit data appears in JSON and YAML output.
 func TestHandleAuditMode_StructuredFormats(t *testing.T) {
-	t.Parallel()
-
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	tests := []struct {
 		name      string
 		format    converter.Format
@@ -751,8 +754,8 @@ func TestHandleAuditMode_StructuredFormats(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
+			// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+			// See GOTCHAS §1.1.
 			logger, err := logging.New(logging.Config{Level: "warn"})
 			require.NoError(t, err)
 
@@ -779,12 +782,12 @@ func TestHandleAuditMode_StructuredFormats(t *testing.T) {
 			var parsed map[string]any
 			require.NoError(t, tt.unmarshal([]byte(result), &parsed))
 
-			// Verify complianceChecks key is present
-			assert.Contains(t, parsed, "complianceChecks")
+			// Verify complianceResults key is present
+			assert.Contains(t, parsed, "complianceResults")
 
 			// Verify compliance data has content
-			checks, ok := parsed["complianceChecks"].(map[string]any)
-			require.True(t, ok, "complianceChecks should be an object")
+			checks, ok := parsed["complianceResults"].(map[string]any)
+			require.True(t, ok, "complianceResults should be an object")
 			assert.Equal(t, "blue", checks["mode"])
 		})
 	}
@@ -796,8 +799,8 @@ func TestHandleAuditMode_StructuredFormats(t *testing.T) {
 // (ValidateModeConfig via GenerateReport). PreRunE acceptance is tested separately
 // in TestAuditCmdPreRunEDynamicPluginAccepted.
 func TestHandleAuditMode_UnknownPluginRejectedPostInit(t *testing.T) {
-	t.Parallel()
-
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	logger, err := logging.New(logging.Config{Level: "warn"})
 	require.NoError(t, err)
 

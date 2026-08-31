@@ -5,7 +5,9 @@ import (
 	"encoding/xml"
 )
 
-// OpnSenseDocument is the root of the OPNsense configuration.
+// OpnSenseDocument is the root schema type representing a complete OPNsense configuration file.
+// It maps to the top-level <opnsense> XML element and contains all subsystem configurations.
+// Use [NewOpnSenseDocument] to create an instance with all slice and map fields safely initialized.
 //
 //nolint:revive // stutters as opnsense.OpnSenseDocument — rename tracked separately
 type OpnSenseDocument struct {
@@ -44,10 +46,19 @@ type OpnSenseDocument struct {
 	Certs                []Cert                 `xml:"cert,omitempty"                   json:"cert,omitempty"       yaml:"cert,omitempty"`
 	DNSMasquerade        DNSMasq                `xml:"dnsmasq,omitempty"                json:"dnsmasq"              yaml:"dnsmasq,omitempty"`
 	Syslog               Syslog                 `xml:"syslog,omitempty"                 json:"syslog"               yaml:"syslog,omitempty"`
-	OPNsense             OPNsense               `xml:"OPNsense,omitempty"               json:"opnsense"             yaml:"opnsense,omitempty"`
+	// Aliases is the legacy top-level <aliases> element used by older
+	// OPNsense configs that predate the MVC Firewall/Alias subsystem
+	// (modern configs store aliases at OPNsense.Firewall.Alias.Aliases
+	// instead — see Firewall.Alias.Aliases). Both sources share the same
+	// AliasList/Alias element shape and are merged by the converter into a
+	// single common.NamedObjects registry.
+	Aliases  AliasList `xml:"aliases,omitempty"  json:"aliases"  yaml:"aliases,omitempty"`
+	OPNsense OPNsense  `xml:"OPNsense,omitempty" json:"opnsense" yaml:"opnsense,omitempty"`
 }
 
-// OPNsense represents the main OPNsense system configuration.
+// OPNsense represents the <OPNsense> sub-element within the configuration, containing
+// MVC-model-based components such as Firewall, IDS, IPsec, Kea DHCP, WireGuard, and other
+// subsystems that use the OPNsense MVC framework rather than legacy XML structures.
 type OPNsense struct {
 	XMLName xml.Name `xml:"OPNsense"`
 	Text    string   `xml:",chardata" json:"text,omitempty"`
@@ -180,96 +191,7 @@ type OPNsense struct {
 		} `xml:"general" json:"general"`
 	} `xml:"trust" json:"trust"`
 
-	UnboundPlus struct {
-		Text    string `xml:",chardata" json:"text,omitempty"`
-		Version string `xml:"version,attr" json:"version,omitempty"`
-		General struct {
-			Text               string `xml:",chardata" json:"text,omitempty"`
-			Enabled            string `xml:"enabled"`
-			Port               string `xml:"port"`
-			Stats              string `xml:"stats"`
-			ActiveInterface    string `xml:"active_interface"`
-			Dnssec             string `xml:"dnssec"`
-			DNS64              string `xml:"dns64"`
-			DNS64prefix        string `xml:"dns64prefix"`
-			Noarecords         string `xml:"noarecords"`
-			RegisterDHCP       string `xml:"regdhcp"`
-			RegisterDHCPDomain string `xml:"regdhcpdomain"`
-			RegisterDHCPStatic string `xml:"regdhcpstatic"`
-			NoRegisterLLAddr6  string `xml:"noreglladdr6"`
-			NoRegisterRecords  string `xml:"noregrecords"`
-			Txtsupport         string `xml:"txtsupport"`
-			Cacheflush         string `xml:"cacheflush"`
-			LocalZoneType      string `xml:"local_zone_type"`
-			OutgoingInterface  string `xml:"outgoing_interface"`
-			EnableWpad         string `xml:"enable_wpad"`
-		} `xml:"general" json:"general"`
-		Advanced struct {
-			Text                      string `xml:",chardata" json:"text,omitempty"`
-			Hideidentity              string `xml:"hideidentity"`
-			Hideversion               string `xml:"hideversion"`
-			Prefetch                  string `xml:"prefetch"`
-			Prefetchkey               string `xml:"prefetchkey"`
-			Dnssecstripped            string `xml:"dnssecstripped"`
-			Aggressivensec            string `xml:"aggressivensec"`
-			Serveexpired              string `xml:"serveexpired"`
-			Serveexpiredreplyttl      string `xml:"serveexpiredreplyttl"`
-			Serveexpiredttl           string `xml:"serveexpiredttl"`
-			Serveexpiredttlreset      string `xml:"serveexpiredttlreset"`
-			Serveexpiredclienttimeout string `xml:"serveexpiredclienttimeout"`
-			Qnameminstrict            string `xml:"qnameminstrict"`
-			Extendedstatistics        string `xml:"extendedstatistics"`
-			Logqueries                string `xml:"logqueries"`
-			Logreplies                string `xml:"logreplies"`
-			Logtagqueryreply          string `xml:"logtagqueryreply"`
-			Logservfail               string `xml:"logservfail"`
-			Loglocalactions           string `xml:"loglocalactions"`
-			Logverbosity              string `xml:"logverbosity"`
-			Valloglevel               string `xml:"valloglevel"`
-			Privatedomain             string `xml:"privatedomain"`
-			Privateaddress            string `xml:"privateaddress"`
-			Insecuredomain            string `xml:"insecuredomain"`
-			Msgcachesize              string `xml:"msgcachesize"`
-			Rrsetcachesize            string `xml:"rrsetcachesize"`
-			Outgoingnumtcp            string `xml:"outgoingnumtcp"`
-			Incomingnumtcp            string `xml:"incomingnumtcp"`
-			Numqueriesperthread       string `xml:"numqueriesperthread"`
-			Outgoingrange             string `xml:"outgoingrange"`
-			Jostletimeout             string `xml:"jostletimeout"`
-			Discardtimeout            string `xml:"discardtimeout"`
-			Cachemaxttl               string `xml:"cachemaxttl"`
-			Cachemaxnegativettl       string `xml:"cachemaxnegativettl"`
-			Cacheminttl               string `xml:"cacheminttl"`
-			Infrahostttl              string `xml:"infrahostttl"`
-			Infrakeepprobing          string `xml:"infrakeepprobing"`
-			Infracachenumhosts        string `xml:"infracachenumhosts"`
-			Unwantedreplythreshold    string `xml:"unwantedreplythreshold"`
-		} `xml:"advanced" json:"advanced"`
-		Acls struct {
-			Text          string `xml:",chardata" json:"text,omitempty"`
-			DefaultAction string `xml:"default_action"`
-		} `xml:"acls" json:"acls"`
-		Dnsbl struct {
-			Text       string `xml:",chardata" json:"text,omitempty"`
-			Enabled    string `xml:"enabled"`
-			Safesearch string `xml:"safesearch"`
-			Type       string `xml:"type"`
-			Lists      string `xml:"lists"`
-			Whitelists string `xml:"whitelists"`
-			Blocklists string `xml:"blocklists"`
-			Wildcards  string `xml:"wildcards"`
-			Address    string `xml:"address"`
-			Nxdomain   string `xml:"nxdomain"`
-		} `xml:"dnsbl" json:"dnsbl"`
-		Forwarding struct {
-			Text    string `xml:",chardata" json:"text,omitempty"`
-			Enabled string `xml:"enabled"`
-		} `xml:"forwarding" json:"forwarding"`
-		Dots    string `xml:"dots"`
-		Hosts   string `xml:"hosts"`
-		Aliases string `xml:"aliases"`
-		Domains string `xml:"domains"`
-	} `xml:"unboundplus" json:"unboundplus"`
+	UnboundPlus UnboundPlus `xml:"unboundplus" json:"unboundplus"`
 
 	Routes struct {
 		Text    string `xml:",chardata" json:"text,omitempty"`
@@ -285,7 +207,8 @@ type OPNsense struct {
 	Updated string `xml:"updated,omitempty"`
 }
 
-// Cert represents a certificate configuration.
+// Cert represents an X.509 certificate entry in the OPNsense configuration,
+// containing the certificate body (Crt), private key (Prv), reference ID, and description.
 type Cert struct {
 	Text  string `xml:",chardata" json:"text,omitempty"`
 	Refid string `xml:"refid"`
@@ -294,9 +217,9 @@ type Cert struct {
 	Prv   string `xml:"prv"`
 }
 
-// Constructor functions
-
-// NewOpnSenseDocument returns a new OpnSenseDocument with all slice and map fields initialized for safe use.
+// NewOpnSenseDocument returns a new [OpnSenseDocument] with all slice and map fields initialized
+// for safe use. This avoids nil-pointer panics when accessing nested collections like
+// Filter.Rule, System.User, Interfaces.Items, and Dhcpd.Items.
 func NewOpnSenseDocument() *OpnSenseDocument {
 	return &OpnSenseDocument{
 		Sysctl: make([]SysctlItem, 0),
@@ -318,8 +241,6 @@ func NewOpnSenseDocument() *OpnSenseDocument {
 		},
 	}
 }
-
-// Helper methods for RootConfig
 
 // Hostname returns the configured hostname from the system configuration.
 func (o *OpnSenseDocument) Hostname() string {
@@ -377,7 +298,8 @@ func (o *OpnSenseDocument) ServiceConfig() ServiceConfig {
 	}
 }
 
-// NATSummary provides comprehensive NAT configuration information for security analysis.
+// NATSummary returns a [NATSummary] aggregating NAT configuration from the document's
+// System and Nat fields, providing a consolidated view for security analysis.
 func (o *OpnSenseDocument) NATSummary() NATSummary {
 	// Initialize with safe defaults
 	summary := NATSummary{
@@ -392,7 +314,7 @@ func (o *OpnSenseDocument) NATSummary() NATSummary {
 	if o.System.DisableNATReflection == "yes" {
 		summary.ReflectionDisabled = true
 	}
-	if o.System.PfShareForward == 1 {
+	if bool(o.System.PfShareForward) {
 		summary.PfShareForward = true
 	}
 

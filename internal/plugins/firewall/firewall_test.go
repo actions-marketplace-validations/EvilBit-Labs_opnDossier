@@ -83,7 +83,12 @@ func TestFirewallPlugin_RunChecks(t *testing.T) {
 					OutboundMode:       common.OutboundHybrid,
 				},
 				DNS: common.DNSConfig{
-					Unbound: common.UnboundConfig{Enabled: true, DNSSEC: true},
+					Unbound: common.UnboundConfig{
+						Enabled:                  true,
+						DNSSEC:                   true,
+						PrivateAddressConfigured: true,
+						PrivateAddress:           []string{"192.168.0.0/16", "10.0.0.0/8"},
+					},
 				},
 			},
 			expectedFindingIDs: []string{
@@ -119,7 +124,8 @@ func TestFirewallPlugin_RunChecks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			findings := firewallPlugin.RunChecks(tt.config)
+			findings, _, err := firewallPlugin.RunChecks(tt.config)
+			require.NoError(t, err)
 
 			assert.Len(t, findings, len(tt.expectedFindingIDs), "Expected %d findings, got %d: %v",
 				len(tt.expectedFindingIDs), len(findings), getFindings(findings))
@@ -152,7 +158,8 @@ func TestFirewallPlugin_RunChecks(t *testing.T) {
 
 func TestFirewallPlugin_RunChecks_NilDevice(t *testing.T) {
 	firewallPlugin := firewall.NewPlugin()
-	findings := firewallPlugin.RunChecks(nil)
+	findings, _, err := firewallPlugin.RunChecks(nil)
+	require.NoError(t, err)
 
 	// Nil device produces findings for verifiable checks where nil means "not configured".
 	// FIREWALL-056 (NAT reflection) returns true for nil (safe default) so no finding.
@@ -276,7 +283,8 @@ func TestFirewallPlugin_RunChecks_AutoConfigBackup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			findings := firewallPlugin.RunChecks(tt.config)
+			findings, _, err := firewallPlugin.RunChecks(tt.config)
+			require.NoError(t, err)
 			found := false
 			for _, finding := range findings {
 				if finding.Reference == "FIREWALL-002" {
@@ -351,7 +359,8 @@ func TestFirewallPlugin_RunChecks_CustomHostname(t *testing.T) {
 					Hostname: tt.hostname,
 				},
 			}
-			findings := firewallPlugin.RunChecks(config)
+			findings, _, err := firewallPlugin.RunChecks(config)
+			require.NoError(t, err)
 			found := false
 			for _, finding := range findings {
 				if finding.Reference == "FIREWALL-004" {
@@ -525,7 +534,8 @@ func TestFirewallPlugin_FindingSeverityMatchesControl(t *testing.T) {
 		},
 	}
 
-	findings := firewallPlugin.RunChecks(device)
+	findings, _, err := firewallPlugin.RunChecks(device)
+	require.NoError(t, err)
 	require.NotEmpty(t, findings, "expected at least one finding")
 
 	for _, finding := range findings {
@@ -776,6 +786,22 @@ func TestFirewallPlugin_NoAnySourceOnWANInbound(t *testing.T) {
 			},
 			expectFinding: false,
 		},
+		{
+			name: "Unscoped floating pass rule with any source and live WAN - finding expected",
+			config: &common.CommonDevice{
+				Interfaces: []common.Interface{
+					{Name: "wan", Enabled: true},
+				},
+				FirewallRules: []common.FirewallRule{
+					{
+						Type:     common.RuleTypePass,
+						Floating: true,
+						Source:   common.RuleEndpoint{Address: constants.NetworkAny},
+					},
+				},
+			},
+			expectFinding: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -864,6 +890,15 @@ func TestFirewallPlugin_PrivateAddressFilteringOnWAN(t *testing.T) {
 			},
 			expectFinding: false,
 		},
+		{
+			name: "Disabled WAN interface without BlockPrivate - no finding (unknown)",
+			config: &common.CommonDevice{
+				Interfaces: []common.Interface{
+					{Name: "wan", Enabled: false, BlockPrivate: false},
+				},
+			},
+			expectFinding: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -895,6 +930,15 @@ func TestFirewallPlugin_BogonFilteringOnWAN(t *testing.T) {
 			config: &common.CommonDevice{
 				Interfaces: []common.Interface{
 					{Name: "wan", Enabled: true, BlockBogons: true},
+				},
+			},
+			expectFinding: false,
+		},
+		{
+			name: "Disabled WAN interface without BlockBogons - no finding (unknown)",
+			config: &common.CommonDevice{
+				Interfaces: []common.Interface{
+					{Name: "wan", Enabled: false, BlockBogons: false},
 				},
 			},
 			expectFinding: false,
@@ -1501,6 +1545,139 @@ func TestFirewallPlugin_DNSSECValidation(t *testing.T) {
 	}
 }
 
+func TestFirewallPlugin_DNSRebindProtection(t *testing.T) {
+	fp := firewall.NewPlugin()
+
+	tests := []struct {
+		name          string
+		config        *common.CommonDevice
+		expectFinding bool
+	}{
+		{
+			// Rebind protection configured → compliant, no finding.
+			name: "unbound enabled with private-address list - no finding",
+			config: &common.CommonDevice{
+				DNS: common.DNSConfig{
+					Unbound: common.UnboundConfig{
+						Enabled:                  true,
+						PrivateAddressConfigured: true,
+						PrivateAddress:           []string{"192.168.0.0/16", "10.0.0.0/8"},
+					},
+				},
+			},
+			expectFinding: false,
+		},
+		{
+			// Operator explicitly cleared the private-address list → Fail.
+			name: "unbound enabled with configured-empty private-address - finding expected",
+			config: &common.CommonDevice{
+				DNS: common.DNSConfig{
+					Unbound: common.UnboundConfig{
+						Enabled:                  true,
+						PrivateAddressConfigured: true,
+						PrivateAddress:           nil,
+					},
+				},
+			},
+			expectFinding: true,
+		},
+		{
+			// Same as above but with a non-nil zero-length slice.
+			name: "unbound enabled with configured zero-length slice - finding expected",
+			config: &common.CommonDevice{
+				DNS: common.DNSConfig{
+					Unbound: common.UnboundConfig{
+						Enabled:                  true,
+						PrivateAddressConfigured: true,
+						PrivateAddress:           []string{},
+					},
+				},
+			},
+			expectFinding: true,
+		},
+		{
+			// MVC <privateaddress> element absent → Unknown (not Fail).
+			// Common on older installs or fresh setups that never touched
+			// the Unbound MVC advanced block.
+			name: "unbound enabled but MVC privateaddress absent - no finding (unknown)",
+			config: &common.CommonDevice{
+				DNS: common.DNSConfig{
+					Unbound: common.UnboundConfig{
+						Enabled:                  true,
+						PrivateAddressConfigured: false,
+					},
+				},
+			},
+			expectFinding: false,
+		},
+		{
+			// Unbound off → check is Unknown (may be DNSMasq install).
+			name: "unbound disabled with private-address populated - no finding (unknown)",
+			config: &common.CommonDevice{
+				DNS: common.DNSConfig{
+					Unbound: common.UnboundConfig{
+						Enabled:                  false,
+						PrivateAddressConfigured: true,
+						PrivateAddress:           []string{"192.168.0.0/16"},
+					},
+				},
+			},
+			expectFinding: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertFindingPresence(t, fp, tt.config, "FIREWALL-007", tt.expectFinding)
+		})
+	}
+}
+
+func TestFirewallPlugin_DNSRebindProtection_NilDevice(t *testing.T) {
+	fp := firewall.NewPlugin()
+
+	// Nil device: hasDNSRebindProtection returns Unknown, so no FIREWALL-007 finding fires.
+	assertFindingPresence(t, fp, nil, "FIREWALL-007", false)
+}
+
+func TestFirewallPlugin_DNSRebindProtection_EvaluableWhenConfigured(t *testing.T) {
+	fp := firewall.NewPlugin()
+
+	// When Unbound is enabled AND the MVC <privateaddress> element was present
+	// in config.xml, FIREWALL-007 is evaluable. This is the positive counterpart
+	// to the evaluated-slice test whose device has Unbound disabled.
+	device := &common.CommonDevice{
+		DNS: common.DNSConfig{
+			Unbound: common.UnboundConfig{
+				Enabled:                  true,
+				PrivateAddressConfigured: true,
+			},
+		},
+	}
+	_, evaluated, err := fp.RunChecks(device)
+	require.NoError(t, err)
+	assert.Contains(t, evaluated, "FIREWALL-007")
+}
+
+func TestFirewallPlugin_DNSRebindProtection_UnknownWhenAbsent(t *testing.T) {
+	fp := firewall.NewPlugin()
+
+	// When Unbound is enabled but the MVC <privateaddress> element was never
+	// present in config.xml, FIREWALL-007 is Unknown (not evaluable) — avoids
+	// firing a false Fail on older installs that never touched the MVC block.
+	device := &common.CommonDevice{
+		DNS: common.DNSConfig{
+			Unbound: common.UnboundConfig{
+				Enabled:                  true,
+				PrivateAddressConfigured: false,
+			},
+		},
+	}
+	_, evaluated, err := fp.RunChecks(device)
+	require.NoError(t, err)
+	assert.NotContains(t, evaluated, "FIREWALL-007")
+}
+
 func TestFirewallPlugin_HAConfiguration(t *testing.T) {
 	fp := firewall.NewPlugin()
 
@@ -1588,7 +1765,7 @@ func TestFirewallPlugin_DisabledRuleCleanup(t *testing.T) {
 	}
 }
 
-func TestFirewallPlugin_EvaluatedControlIDs(t *testing.T) {
+func TestFirewallPlugin_RunChecks_ReturnsEvaluatedControlIDs(t *testing.T) {
 	fp := firewall.NewPlugin()
 
 	// A device with enough data to evaluate many controls.
@@ -1607,7 +1784,8 @@ func TestFirewallPlugin_EvaluatedControlIDs(t *testing.T) {
 		},
 	}
 
-	evaluated := fp.EvaluatedControlIDs(device)
+	_, evaluated, err := fp.RunChecks(device)
+	require.NoError(t, err)
 
 	// Verify some known evaluable controls are present.
 	for _, id := range []string{
@@ -1621,7 +1799,8 @@ func TestFirewallPlugin_EvaluatedControlIDs(t *testing.T) {
 		assert.Contains(t, evaluated, id, "Expected %s to be evaluable", id)
 	}
 
-	// Verify unknown controls are NOT present.
+	// Verify unknown controls are NOT present. FIREWALL-007 is Unknown here
+	// because the test device has Unbound disabled.
 	for _, id := range []string{
 		"FIREWALL-001", "FIREWALL-003", "FIREWALL-007",
 		"FIREWALL-009", "FIREWALL-010", "FIREWALL-011",
@@ -1647,7 +1826,8 @@ func assertFindingPresence(
 ) {
 	t.Helper()
 
-	findings := fp.RunChecks(config)
+	findings, _, err := fp.RunChecks(config)
+	require.NoError(t, err)
 	found := false
 
 	for _, f := range findings {
@@ -1665,10 +1845,124 @@ func assertFindingPresence(
 
 // Helper function to extract finding IDs for debugging.
 func getFindings(findings []compliance.Finding) []string {
-	var ids []string
+	ids := make([]string, 0, len(findings))
 	for _, finding := range findings {
 		ids = append(ids, finding.Reference)
 	}
 
 	return ids
+}
+
+// hasFindingRef reports whether findings contains one referencing controlID.
+func hasFindingRef(findings []compliance.Finding, controlID string) bool {
+	for _, f := range findings {
+		if f.Reference == controlID {
+			return true
+		}
+	}
+
+	return false
+}
+
+// TestFirewallPlugin_AnyAnyPassRule_AllAnySpellings guards a false negative on
+// the two highest-severity rule checks. Both compared the endpoint address
+// against the "any" literal, so a pass rule matching all traffic reported
+// compliant whenever the config spelled "any" any other way: an omitted or
+// empty <source>/<destination> element (Address ""), a wildcard CIDR, or
+// different casing. FIREWALL-022 and FIREWALL-023 exist to catch exactly that
+// rule, and the repo's own testdata/gateway_groups_test.xml contains a <rule>
+// with no <source> element.
+func TestFirewallPlugin_AnyAnyPassRule_AllAnySpellings(t *testing.T) {
+	t.Parallel()
+
+	for _, addr := range []string{"any", "ANY", "", "0.0.0.0/0", "::/0"} {
+		t.Run("addr="+addr, func(t *testing.T) {
+			t.Parallel()
+
+			device := &common.CommonDevice{
+				Interfaces: []common.Interface{
+					{Name: "wan", IPAddress: "203.0.113.10", Enabled: true},
+				},
+				FirewallRules: []common.FirewallRule{{
+					Type:        common.RuleTypePass,
+					Interfaces:  []string{"wan"},
+					Description: "wide open",
+					Source:      common.RuleEndpoint{Address: addr},
+					Destination: common.RuleEndpoint{Address: addr},
+				}},
+			}
+
+			findings, _, err := firewall.NewPlugin().RunChecks(device)
+			require.NoError(t, err)
+
+			assert.True(t, hasFindingRef(findings, "FIREWALL-022"),
+				"a pass rule with source and destination %q passes all traffic", addr)
+			assert.True(t, hasFindingRef(findings, "FIREWALL-023"),
+				"a WAN pass rule with source %q accepts every source", addr)
+		})
+	}
+}
+
+// TestFirewallPlugin_ScopedRule_NoAnyAnyFinding is the false-positive half:
+// widening the any predicate must not flag a properly scoped rule.
+func TestFirewallPlugin_ScopedRule_NoAnyAnyFinding(t *testing.T) {
+	t.Parallel()
+
+	device := &common.CommonDevice{
+		Interfaces: []common.Interface{
+			{Name: "wan", IPAddress: "203.0.113.10", Enabled: true},
+		},
+		FirewallRules: []common.FirewallRule{{
+			Type:        common.RuleTypePass,
+			Interfaces:  []string{"wan"},
+			Protocol:    "tcp",
+			Description: "scoped inbound https",
+			Source:      common.RuleEndpoint{Address: "198.51.100.0/24"},
+			Destination: common.RuleEndpoint{Address: "203.0.113.10", Port: "443"},
+		}},
+	}
+
+	findings, _, err := firewall.NewPlugin().RunChecks(device)
+	require.NoError(t, err)
+
+	assert.False(t, hasFindingRef(findings, "FIREWALL-022"),
+		"a scoped rule must not be reported as any-any")
+	assert.False(t, hasFindingRef(findings, "FIREWALL-023"),
+		"a rule with a scoped source must not be reported as any-source on WAN")
+}
+
+// TestFirewallPlugin_NegatedWildcard_NoAnyAnyFinding is the other
+// false-positive half. A negated endpoint matches the complement of its
+// address, so a negated wildcard matches nothing and the rule passes no
+// traffic. Reporting FIREWALL-022 or -023 against it would raise a
+// highest-severity finding on a rule that cannot forward a packet.
+func TestFirewallPlugin_NegatedWildcard_NoAnyAnyFinding(t *testing.T) {
+	t.Parallel()
+
+	for _, addr := range []string{"any", "ANY", "", "0.0.0.0/0", "::/0"} {
+		t.Run("addr="+addr, func(t *testing.T) {
+			t.Parallel()
+
+			device := &common.CommonDevice{
+				Interfaces: []common.Interface{
+					{Name: "wan", IPAddress: "203.0.113.10", Enabled: true},
+				},
+				FirewallRules: []common.FirewallRule{{
+					Type:        common.RuleTypePass,
+					Interfaces:  []string{"wan"},
+					Description: "negated wildcard, matches nothing",
+					Source:      common.RuleEndpoint{Address: addr, Negated: true},
+					Destination: common.RuleEndpoint{Address: addr, Negated: true},
+				}},
+			}
+
+			findings, _, err := firewall.NewPlugin().RunChecks(device)
+			require.NoError(t, err)
+
+			assert.False(t, hasFindingRef(findings, "FIREWALL-022"),
+				"a negated %q endpoint matches nothing, so the rule passes no traffic", addr)
+			assert.False(t, hasFindingRef(findings, "FIREWALL-023"),
+				"a negated %q source accepts no source", addr)
+		})
+	}
 }

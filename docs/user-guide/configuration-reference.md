@@ -2,7 +2,7 @@
 
 Complete reference for all opnDossier configuration options. Configuration can be set via command-line flags, environment variables, or configuration file with clear precedence order.
 
-For how configuration precedence works, see the [Configuration Guide](configuration.md).
+For how configuration precedence works and worked setup recipes, see [Configuring opnDossier](configuration.md).
 
 ## Global Options
 
@@ -50,12 +50,12 @@ The `audit` command is the dedicated entry point for security audit and complian
 
 ### Audit-Specific Flags
 
-| Setting            | CLI Flag          | Type     | Default  | Description                                                                                                 |
-| ------------------ | ----------------- | -------- | -------- | ----------------------------------------------------------------------------------------------------------- |
-| Audit mode         | `--mode`          | string   | `"blue"` | Audit mode: `blue` (defensive audit with compliance), `red` (attack surface)                                |
-| Compliance plugins | `--plugins`       | string[] | `[]`     | Comma-separated list: `stig`, `sans`, `firewall`. Only valid with `--mode blue`. Empty = all plugins run.   |
-| Plugin directory   | `--plugin-dir`    | string   | `""`     | Directory containing dynamic `.so` compliance plugins. Failed plugin loads are non-fatal (warnings logged). |
-| Failures only      | `--failures-only` | boolean  | `false`  | Show only failing controls in compliance tables. Only valid with `--mode blue` and markdown format.         |
+| Setting            | CLI Flag          | Type     | Default  | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------ | ----------------- | -------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Audit mode         | `--mode`          | string   | `"blue"` | Audit mode: `blue` (defensive audit with compliance), `red` (attack surface)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Compliance plugins | `--plugins`       | string[] | `[]`     | Comma-separated list: `stig`, `sans`, `firewall`. Only valid with `--mode blue`. Empty = all plugins run.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Plugin directory   | `--plugin-dir`    | string   | `""`     | Directory containing **third-party** dynamic `.so` compliance plugins. Does not affect the built-in `stig`/`sans`/`firewall` plugins (compiled into the binary; always available). **Linux/macOS/FreeBSD only — Go's `plugin` package is not implemented on Windows.** **Third-party plugins run with full process privileges; opnDossier does not verify signatures.** A preflight rejects symlinks, group/world-writable files and directories, and oversize (>64 MiB) files, and every load attempt is logged with a SHA-256 digest. See [audit -- Third-Party Plugin Security](commands/audit.md#third-party-plugin-security) for the full restriction list, threat scenarios, and operator responsibilities. Failed loads are non-fatal (warnings logged). |
+| Failures only      | `--failures-only` | boolean  | `false`  | Show only failing controls in compliance tables. Only valid with `--mode blue` and markdown format.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 ### Shared Output Flags
 
@@ -159,20 +159,46 @@ minimal: false
 
 ## Environment Variables
 
-All configuration options can be set via environment variables with the `OPNDOSSIER_` prefix:
+Every configuration key has an environment-variable equivalent. Uppercase the key, replace dots with underscores, and prefix it with `OPNDOSSIER_`:
+
+- Flat keys — `verbose` → `OPNDOSSIER_VERBOSE`, `input_file` → `OPNDOSSIER_INPUT_FILE`
+- Nested keys — `display.width` → `OPNDOSSIER_DISPLAY_WIDTH`, `logging.level` → `OPNDOSSIER_LOGGING_LEVEL`
+
+### Complete variable reference
+
+| Configuration Key              | Environment Variable                      | Type     | Default    |
+| ------------------------------ | ----------------------------------------- | -------- | ---------- |
+| `input_file`                   | `OPNDOSSIER_INPUT_FILE`                   | string   | ""         |
+| `output_file`                  | `OPNDOSSIER_OUTPUT_FILE`                  | string   | ""         |
+| `verbose`                      | `OPNDOSSIER_VERBOSE`                      | boolean  | false      |
+| `debug`                        | `OPNDOSSIER_DEBUG`                        | boolean  | false      |
+| `quiet`                        | `OPNDOSSIER_QUIET`                        | boolean  | false      |
+| `format`                       | `OPNDOSSIER_FORMAT`                       | string   | "markdown" |
+| `theme`                        | `OPNDOSSIER_THEME`                        | string   | ""         |
+| `sections`                     | `OPNDOSSIER_SECTIONS`                     | []string | []         |
+| `wrap`                         | `OPNDOSSIER_WRAP`                         | int      | -1         |
+| `json_output`                  | `OPNDOSSIER_JSON_OUTPUT`                  | boolean  | false      |
+| `minimal`                      | `OPNDOSSIER_MINIMAL`                      | boolean  | false      |
+| `no_progress`                  | `OPNDOSSIER_NO_PROGRESS`                  | boolean  | false      |
+| `display.width`                | `OPNDOSSIER_DISPLAY_WIDTH`                | int      | -1         |
+| `display.pager`                | `OPNDOSSIER_DISPLAY_PAGER`                | boolean  | false      |
+| `display.syntax_highlighting`  | `OPNDOSSIER_DISPLAY_SYNTAX_HIGHLIGHTING`  | boolean  | true       |
+| `export.format`                | `OPNDOSSIER_EXPORT_FORMAT`                | string   | "markdown" |
+| `export.directory`             | `OPNDOSSIER_EXPORT_DIRECTORY`             | string   | ""         |
+| `export.backup`                | `OPNDOSSIER_EXPORT_BACKUP`                | boolean  | false      |
+| `logging.level`                | `OPNDOSSIER_LOGGING_LEVEL`                | string   | "info"     |
+| `logging.format`               | `OPNDOSSIER_LOGGING_FORMAT`               | string   | "text"     |
+| `validation.strict`            | `OPNDOSSIER_VALIDATION_STRICT`            | boolean  | false      |
+| `validation.schema_validation` | `OPNDOSSIER_VALIDATION_SCHEMA_VALIDATION` | boolean  | false      |
+
+### Value encoding
+
+Booleans accept `true`/`false` in any case, plus `1`/`0`. Lists are comma-separated.
 
 ```bash
-# Logging
-export OPNDOSSIER_VERBOSE=true
-export OPNDOSSIER_QUIET=false
-
-# Output
-export OPNDOSSIER_FORMAT=markdown
-export OPNDOSSIER_WRAP=100
-
-# File Paths
+export OPNDOSSIER_VERBOSE=1
+export OPNDOSSIER_SECTIONS="system,network,firewall,services,security"
 export OPNDOSSIER_INPUT_FILE="/path/to/config.xml"
-export OPNDOSSIER_OUTPUT_FILE="./documentation.md"
 ```
 
 ## Configuration Validation
@@ -195,7 +221,7 @@ Error: invalid color "invalid", must be one of: auto, always, never
 
 ## Related
 
-- [Configuration Guide](configuration.md) -- how to configure opnDossier
+- [Configuring opnDossier](configuration.md) -- precedence, recipes, and troubleshooting
 - [Commands Overview](commands/overview.md) -- per-command flag reference
 - [Audit Command](commands/audit.md) -- dedicated security audit and compliance checks
 - [XML Field Reference](../xml-field-reference.md) -- OPNsense XML schema details

@@ -16,10 +16,6 @@ import (
 // destinationAny is the canonical string used to represent an unrestricted destination in firewall rules.
 const destinationAny = "any"
 
-// findingTypeInventory is the Type value for informational inventory findings
-// that are rendered in "Configuration Notes" rather than "Security Findings".
-const findingTypeInventory = "inventory"
-
 // SectionBuilder defines methods for building individual report sections.
 // Each method renders a specific configuration domain into a markdown string
 // or returns an empty string when the section has no data.
@@ -40,7 +36,7 @@ type SectionBuilder interface {
 	BuildHASection(data *common.CommonDevice) string
 	// BuildIDSSection builds the IDS/Suricata configuration section.
 	BuildIDSSection(data *common.CommonDevice) string
-	// BuildAuditSection builds the compliance audit section from the device's ComplianceChecks.
+	// BuildAuditSection builds the compliance audit section from the device's ComplianceResults.
 	BuildAuditSection(data *common.CommonDevice) string
 }
 
@@ -116,21 +112,70 @@ type MarkdownBuilder struct {
 	failuresOnly    bool
 }
 
+// Option configures a MarkdownBuilder at construction time.
+//
+// Options are applied after the default values are set and override them.
+// Use WithGeneratedTime and WithVersion in tests to produce deterministic,
+// byte-for-byte reproducible output (for golden files, for example).
+type Option func(*MarkdownBuilder)
+
+// WithGeneratedTime sets the "Generated On" timestamp used in report headers.
+//
+// When the zero time is supplied the default (time.Now at construction) is
+// retained. Tests should pass a fixed UTC time to make report output
+// deterministic and avoid post-hoc regex normalization of golden files.
+func WithGeneratedTime(t time.Time) Option {
+	return func(b *MarkdownBuilder) {
+		if !t.IsZero() {
+			b.generated = t
+		}
+	}
+}
+
+// WithVersion sets the tool version string used in the "Parsed By" header line.
+//
+// When an empty string is supplied the default (constants.Version) is retained.
+// Tests should pass a fixed version to decouple golden files from the
+// build-time -ldflags -X injection of constants.Version.
+func WithVersion(v string) Option {
+	return func(b *MarkdownBuilder) {
+		if v != "" {
+			b.toolVersion = v
+		}
+	}
+}
+
 // NewMarkdownBuilder creates a new MarkdownBuilder instance.
-func NewMarkdownBuilder() *MarkdownBuilder {
+//
+// By default the generated timestamp is time.Now() and the tool version is
+// constants.Version. Pass WithGeneratedTime and/or WithVersion to override
+// these defaults (typically for deterministic test output).
+func NewMarkdownBuilder(opts ...Option) *MarkdownBuilder {
 	logger, err := logging.New(logging.Config{Level: "info"})
 	if err != nil {
 		logger = &logging.Logger{}
 	}
-	return &MarkdownBuilder{
+	b := &MarkdownBuilder{
 		generated:   time.Now(),
 		toolVersion: constants.Version,
 		logger:      logger,
 	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
 }
 
 // NewMarkdownBuilderWithConfig creates a new MarkdownBuilder instance with configuration.
-func NewMarkdownBuilderWithConfig(config *common.CommonDevice, logger *logging.Logger) *MarkdownBuilder {
+//
+// By default the generated timestamp is time.Now() and the tool version is
+// constants.Version. Pass WithGeneratedTime and/or WithVersion to override
+// these defaults (typically for deterministic test output).
+func NewMarkdownBuilderWithConfig(
+	config *common.CommonDevice,
+	logger *logging.Logger,
+	opts ...Option,
+) *MarkdownBuilder {
 	if logger == nil {
 		var err error
 		logger, err = logging.New(logging.Config{Level: "info"})
@@ -138,12 +183,16 @@ func NewMarkdownBuilderWithConfig(config *common.CommonDevice, logger *logging.L
 			logger = &logging.Logger{}
 		}
 	}
-	return &MarkdownBuilder{
+	b := &MarkdownBuilder{
 		config:      config,
 		logger:      logger,
 		generated:   time.Now(),
 		toolVersion: constants.Version,
 	}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
 }
 
 // SetIncludeTunables configures whether all system tunables are included in the report.
@@ -221,9 +270,10 @@ func (b *MarkdownBuilder) BuildStandardReport(data *common.CommonDevice) (string
 		H1(platformName+" Configuration Summary").
 		H2("System Information").
 		BulletList(
-			markdown.Bold("Hostname")+": "+data.System.Hostname,
-			markdown.Bold("Domain")+": "+data.System.Domain,
-			markdown.Bold("Platform")+": "+strings.TrimSpace(platformName+" "+data.System.Firmware.Version),
+			markdown.Bold("Hostname")+": "+formatters.EscapeMarkdownValue(data.System.Hostname),
+			markdown.Bold("Domain")+": "+formatters.EscapeMarkdownValue(data.System.Domain),
+			markdown.Bold("Platform")+
+				": "+formatters.EscapeMarkdownValue(strings.TrimSpace(platformName+" "+data.System.Firmware.Version)),
 			markdown.Bold("Generated On")+": "+b.generated.Format(time.RFC3339),
 			markdown.Bold("Parsed By")+": opnDossier v"+b.toolVersion,
 		).
@@ -239,7 +289,7 @@ func (b *MarkdownBuilder) BuildStandardReport(data *common.CommonDevice) (string
 		b.WriteSysctlTable(md.H2("System Tunables"), filteredSysctl)
 	}
 
-	return md.String(), nil
+	return renderMarkdown(md), nil
 }
 
 // BuildComprehensiveReport builds a comprehensive markdown report.
@@ -258,9 +308,10 @@ func (b *MarkdownBuilder) BuildComprehensiveReport(data *common.CommonDevice) (s
 		H1(platformName+" Configuration Summary").
 		H2("System Information").
 		BulletList(
-			markdown.Bold("Hostname")+": "+data.System.Hostname,
-			markdown.Bold("Domain")+": "+data.System.Domain,
-			markdown.Bold("Platform")+": "+strings.TrimSpace(platformName+" "+data.System.Firmware.Version),
+			markdown.Bold("Hostname")+": "+formatters.EscapeMarkdownValue(data.System.Hostname),
+			markdown.Bold("Domain")+": "+formatters.EscapeMarkdownValue(data.System.Domain),
+			markdown.Bold("Platform")+
+				": "+formatters.EscapeMarkdownValue(strings.TrimSpace(platformName+" "+data.System.Firmware.Version)),
 			markdown.Bold("Generated On")+": "+b.generated.Format(time.RFC3339),
 			markdown.Bold("Parsed By")+": opnDossier v"+b.toolVersion,
 		).
@@ -281,5 +332,5 @@ func (b *MarkdownBuilder) BuildComprehensiveReport(data *common.CommonDevice) (s
 		b.WriteSysctlTable(md.H2("System Tunables"), filteredSysctl)
 	}
 
-	return md.String(), nil
+	return renderMarkdown(md), nil
 }

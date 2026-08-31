@@ -28,6 +28,7 @@ var (
 	auditPlugins      []string //nolint:gochecknoglobals // Cobra flag variable — selected compliance plugins
 	auditPluginDir    string   //nolint:gochecknoglobals // Cobra flag variable — dynamic plugin directory
 	auditFailuresOnly bool     //nolint:gochecknoglobals // Cobra flag variable — show only failing controls
+	auditBlackhat     bool     //nolint:gochecknoglobals // Cobra flag variable — red-mode sharper-tone ExploitNotes
 )
 
 // init registers the audit command with the root command and configures its command-line flags.
@@ -36,36 +37,40 @@ func init() {
 
 	// Audit-specific flags (shorter names since this is the dedicated audit command)
 	auditCmd.Flags().
-		StringVar(&auditMode, "mode", "blue", "Audit mode (blue|red)")
-	setFlagAnnotation(auditCmd.Flags(), "mode", []string{"audit"})
+		StringVar(&auditMode, "mode", auditModeBlue, "Audit mode (blue|red)")
+	setFlagAnnotation(auditCmd.Flags(), "mode", []flagCategory{categoryAudit})
 
 	auditCmd.Flags().
 		StringSliceVar(&auditPlugins, "plugins", []string{}, "Compliance plugins to run (stig,sans,firewall)")
-	setFlagAnnotation(auditCmd.Flags(), "plugins", []string{"audit"})
+	setFlagAnnotation(auditCmd.Flags(), "plugins", []flagCategory{categoryAudit})
 
 	auditCmd.Flags().
-		StringVar(&auditPluginDir, "plugin-dir", "", "Directory containing dynamic .so compliance plugins")
-	setFlagAnnotation(auditCmd.Flags(), "plugin-dir", []string{"audit"})
+		StringVar(&auditPluginDir, "plugin-dir", "", pluginDirFlagUsage)
+	setFlagAnnotation(auditCmd.Flags(), "plugin-dir", []flagCategory{categoryAudit})
 
 	auditCmd.Flags().
 		BoolVar(&auditFailuresOnly, "failures-only", false, "Show only failing controls in blue mode plugin results tables")
-	setFlagAnnotation(auditCmd.Flags(), "failures-only", []string{"audit"})
+	setFlagAnnotation(auditCmd.Flags(), "failures-only", []flagCategory{categoryAudit})
+
+	auditCmd.Flags().
+		BoolVar(&auditBlackhat, "audit-blackhat", false, "Sharpen the tone of red mode ExploitNotes (red mode only; impact/context only, no attack instructions)")
+	setFlagAnnotation(auditCmd.Flags(), "audit-blackhat", []flagCategory{categoryAudit})
 
 	// Output and format flags (reuse existing package-level variables)
 	auditCmd.Flags().
-		StringVarP(&format, "format", "f", "markdown", "Output format for audit report (markdown, json, yaml, text, html)")
-	setFlagAnnotation(auditCmd.Flags(), "format", []string{"output"})
+		StringVarP(&format, flagFormat, "f", defaultFormat, "Output format for audit report (markdown, json, yaml, text, html)")
+	setFlagAnnotation(auditCmd.Flags(), flagFormat, []flagCategory{categoryOutput})
 
 	auditCmd.Flags().
 		StringVarP(&outputFile, "output", "o", "", "Output file path for saving audit report (default: print to console)")
-	setFlagAnnotation(auditCmd.Flags(), "output", []string{"output"})
+	setFlagAnnotation(auditCmd.Flags(), "output", []flagCategory{categoryOutput})
 
 	auditCmd.Flags().
 		BoolVar(&force, "force", false, "Force overwrite existing files without prompting for confirmation")
-	setFlagAnnotation(auditCmd.Flags(), "force", []string{"output"})
+	setFlagAnnotation(auditCmd.Flags(), "force", []flagCategory{categoryOutput})
 
 	// Add shared styling and content flags
-	addSharedTemplateFlags(auditCmd)
+	addSharedContentFlags(auditCmd)
 
 	// Add shared redact flag
 	addSharedRedactFlag(auditCmd)
@@ -102,7 +107,7 @@ func registerAuditFlagCompletions(cmd *cobra.Command) {
 var auditCmd = &cobra.Command{
 	Use:               "audit [file ...]",
 	Short:             "Run security audit and compliance checks on OPNsense configurations.",
-	GroupID:           "audit",
+	GroupID:           groupAudit,
 	ValidArgsFunction: ValidXMLFiles,
 	Args:              cobra.MinimumNArgs(1),
 	PreRunE: func(cmd *cobra.Command, args []string) error {
@@ -117,31 +122,43 @@ var auditCmd = &cobra.Command{
 		normalizeConvertFlags()
 
 		// Validate audit mode
-		validModes := []string{"blue", "red"}
+		validModes := []string{auditModeBlue, auditModeRed}
 		if !slices.Contains(validModes, strings.ToLower(auditMode)) {
 			return fmt.Errorf("invalid audit mode %q, must be one of: %s",
 				auditMode, strings.Join(validModes, ", "))
 		}
 
-		// Warn when red mode is selected — its analysis methods are placeholder stubs
-		// that return fabricated metadata. Results will be incomplete until the red
-		// team pipeline is fully implemented.
-		if strings.EqualFold(auditMode, "red") {
-			fmt.Fprintf(os.Stderr,
-				"WARNING: Red team mode is experimental and not yet fully implemented. Results may be incomplete.\n")
+		// Warn when --plugin-dir is supplied — dynamic .so plugins execute with
+		// full process privileges and no signature verification (GOTCHAS §2.5).
+		// Route through cmd.ErrOrStderr() rather than os.Stderr so tests can capture the
+		// warning (matches cmd/list_plugins.go's stream choice). Write errors
+		// are fatal — silently loading a dynamic .so without surfacing the
+		// trust-model warning is the regression this function exists to
+		// prevent.
+		if err := warnPluginDirTrustModel(cmd.ErrOrStderr(), auditPluginDir); err != nil {
+			return fmt.Errorf("emit trust-model warning: %w", err)
 		}
 
 		// Reject --plugins when the selected mode does not execute compliance checks.
 		// Only blue mode runs RunComplianceChecks; red mode ignores plugins.
-		if len(auditPlugins) > 0 && !strings.EqualFold(auditMode, "blue") {
+		if len(auditPlugins) > 0 && !strings.EqualFold(auditMode, auditModeBlue) {
 			return fmt.Errorf("--plugins is only supported with --mode blue; %q mode does not run compliance checks",
 				auditMode)
 		}
 
 		// Reject --failures-only when the selected mode does not execute compliance checks.
-		if auditFailuresOnly && !strings.EqualFold(auditMode, "blue") {
+		if auditFailuresOnly && !strings.EqualFold(auditMode, auditModeBlue) {
 			return fmt.Errorf(
 				"--failures-only is only supported with --mode blue; %q mode does not run compliance checks",
+				auditMode,
+			)
+		}
+
+		// Reject --audit-blackhat outside red mode — it only sharpens red-mode
+		// ExploitNote tone, and blue mode emits no ExploitNotes.
+		if auditBlackhat && !strings.EqualFold(auditMode, auditModeRed) {
+			return fmt.Errorf(
+				"--audit-blackhat is only supported with --mode red; %q mode emits no exploit notes",
 				auditMode,
 			)
 		}
@@ -158,10 +175,11 @@ var auditCmd = &cobra.Command{
 
 		// Reject --output with multiple input files to prevent output clobbering.
 		// Each file produces a separate report auto-named as <input>-audit.<ext>.
-		if outputFile != "" && len(args) > 1 {
-			return errors.New(
-				"--output cannot be used with multiple input files; omit --output to auto-name each report as <input>-audit.<ext>",
-			)
+		if err := validateMultiFileOutput(
+			outputFile, len(args),
+			"omit --output to auto-name each report as <input>-audit.<ext>",
+		); err != nil {
+			return err
 		}
 
 		// Validate format/wrap flag combinations (shared output flags only,
@@ -177,28 +195,28 @@ OPNsense config.xml files. It produces a report with compliance findings,
 security recommendations, and risk assessments based on the selected audit
 mode and compliance plugins.
 
-  AUDIT MODES:
+AUDIT MODES:
   Select the audit perspective using the --mode flag:
 
-    blue      - Defensive audit with security findings and recommendations (default)
-    red       - Attacker-focused recon report highlighting attack surfaces
+    blue  - Defensive audit with security findings and recommendations (default)
+    red   - Attacker-focused recon report highlighting attack surfaces,
+            weak NAT rules, admin portals, and enumeration data
 
-  COMPLIANCE PLUGINS (blue mode only):
-  Select compliance checks to run with the --plugins flag (requires --mode blue):
+COMPLIANCE PLUGINS (blue mode only):
+  Select compliance checks with --plugins (requires --mode blue):
 
     stig      - Security Technical Implementation Guide
     sans      - SANS Firewall Baseline
     firewall  - Firewall Configuration Analysis
 
-  When no plugins are specified in blue mode, all available plugins are run.
-  The --plugins flag is not accepted with red mode.
+  Omit --plugins to run every available plugin. The flag is rejected with red mode.
 
-  CONTROL FILTERING (blue mode only):
-  Use --failures-only to show only non-compliant controls in plugin results tables.
-  When omitted, all controls (PASS and FAIL) are shown.
+CONTROL FILTERING (blue mode only):
+  Use --failures-only to hide PASS rows in plugin result tables. Applies only to
+  markdown output; JSON/YAML consumers must filter client-side.
 
-  OUTPUT FORMATS:
-  The audit report can be exported in multiple formats using the --format flag:
+OUTPUT FORMATS:
+  Select the report encoding with --format:
 
     markdown  - Standard markdown report (default)
     json      - JSON format for programmatic access
@@ -206,36 +224,37 @@ mode and compliance plugins.
     text      - Plain text output (markdown without formatting)
     html      - Self-contained HTML report for web viewing
 
-Examples:
-  # Run a blue team audit with all compliance plugins (default)
-  opnDossier audit config.xml
+MULTI-FILE RUNS:
+  Pass multiple input files to audit them concurrently. --output is rejected in
+  multi-file mode; each report is auto-named <input>-audit.<ext>.
+
+RELATED:
+  convert    - Render configuration without compliance checks
+  validate   - Structural validation (no audit)
+  sanitize   - Redact secrets before sharing audit output`,
+	Example: `  # Run a blue team audit with all compliance plugins (default)
+  opndossier audit config.xml
 
   # Blue team defensive audit with specific plugins
-  opnDossier audit config.xml --plugins stig,sans
+  opndossier audit config.xml --plugins stig,sans
 
   # Red team attack surface analysis
-  opnDossier audit config.xml --mode red
+  opndossier audit config.xml --mode red
 
   # Export audit report as JSON
-  opnDossier audit config.xml --format json -o audit-report.json
+  opndossier audit config.xml --format json -o audit-report.json
 
-  # Run audit on multiple files (each report is auto-named: config1-audit.md, config2-audit.md)
-  opnDossier audit config1.xml config2.xml --mode blue
+  # Multi-file audit (reports auto-named config1-audit.md, config2-audit.md)
+  opndossier audit config1.xml config2.xml --mode blue
 
   # Comprehensive blue team audit with all compliance checks
-  opnDossier audit config.xml --mode blue --comprehensive --plugins stig,sans,firewall
+  opndossier audit config.xml --mode blue --comprehensive --plugins stig,sans,firewall
 
-  # Show only failing controls in blue mode
-  opnDossier audit config.xml --mode blue --failures-only
+  # Show only failing controls in blue mode markdown output
+  opndossier audit config.xml --mode blue --failures-only
 
   # Redact sensitive fields from audit output
-  opnDossier audit config.xml --redact
-
-  # Quiet mode (errors only)
-  opnDossier --quiet audit config.xml --mode blue
-
-  # Verbose audit diagnostics
-  opnDossier --verbose audit config.xml --mode blue --plugins stig,sans`,
+  opndossier audit config.xml --redact`,
 	RunE: runAudit,
 }
 
@@ -284,13 +303,9 @@ func runAudit(cmd *cobra.Command, args []string) error {
 	sem := make(chan struct{}, maxConcurrent)
 
 	// Buffer results: each goroutine produces an auditResult or an error.
-	// Results are collected here and emitted serially after all processing completes.
-	type resultOrError struct {
-		result auditResult
-		err    error
-	}
-
-	results := make([]resultOrError, len(args))
+	// Results are collected here and emitted serially after all processing completes
+	// (GOTCHAS §8.3: concurrent generation, serial emission).
+	results := make([]auditResultOrError, len(args))
 
 	var wg sync.WaitGroup
 
@@ -299,36 +314,8 @@ func runAudit(cmd *cobra.Command, args []string) error {
 
 		go func(idx int, fp string) {
 			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					cmdLogger.WithContext(timeoutCtx).Error(
-						"goroutine panicked during audit processing",
-						"input_file", fp,
-						"panic", r,
-						"stack", string(debug.Stack()),
-					)
-					results[idx] = resultOrError{
-						err: fmt.Errorf("panic processing %s: %v", fp, r),
-					}
-				}
-			}()
 
-			// Acquire semaphore slot with context awareness
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-timeoutCtx.Done():
-				results[idx] = resultOrError{err: timeoutCtx.Err()}
-
-				return
-			}
-
-			output, err := generateAuditOutput(timeoutCtx, fp, cmdLogger, cmdConfig)
-			if err != nil {
-				results[idx] = resultOrError{err: err}
-			} else {
-				results[idx] = resultOrError{result: auditResult{inputFile: fp, output: output}}
-			}
+			results[idx] = processAuditFile(timeoutCtx, fp, sem, cmdLogger, cmdConfig)
 		}(i, filePath)
 	}
 
@@ -353,6 +340,68 @@ func runAudit(cmd *cobra.Command, args []string) error {
 	return errors.Join(allErrors...)
 }
 
+// auditResultOrError pairs a successful audit result with an error slot so a
+// single slice entry can represent either outcome. It preserves input ordering
+// for serial emission (GOTCHAS §8.3).
+type auditResultOrError struct {
+	result auditResult
+	err    error
+}
+
+// processAuditFile runs the audit pipeline for a single input file under the
+// shared concurrency semaphore and returns the result or error. It is safe to
+// call from a goroutine: all I/O emission is deferred to emitAuditResult on
+// the parent goroutine (GOTCHAS §8.3).
+//
+// The function recovers from panics inside generateAuditOutput so that one
+// corrupt plugin or parser cannot abort the whole multi-file run. Stack dumps
+// are gated behind verbose logging because function names in stack traces can
+// leak internal plugin paths into centralized logs.
+//
+//nolint:nonamedreturns // panic recovery in the deferred func must overwrite the success value; a named return is the idiomatic way to do that.
+func processAuditFile(
+	ctx context.Context,
+	fp string,
+	sem chan struct{},
+	cmdLogger *logging.Logger,
+	cmdConfig *config.Config,
+) (res auditResultOrError) {
+	defer func() {
+		if r := recover(); r != nil {
+			if cmdLogger.IsVerbose() {
+				cmdLogger.Error(
+					"goroutine panicked during audit processing",
+					"input_file", fp,
+					"panic", r,
+					"stack", string(debug.Stack()),
+				)
+			} else {
+				cmdLogger.Error(
+					"goroutine panicked during audit processing",
+					"input_file", fp,
+					"panic", r,
+				)
+			}
+			res = auditResultOrError{err: fmt.Errorf("panic processing %s: %v", fp, r)}
+		}
+	}()
+
+	// Acquire semaphore slot with context awareness
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		return auditResultOrError{err: ctx.Err()}
+	}
+
+	output, err := generateAuditOutput(ctx, fp, cmdLogger, cmdConfig)
+	if err != nil {
+		return auditResultOrError{err: err}
+	}
+
+	return auditResultOrError{result: auditResult{inputFile: fp, output: output}}
+}
+
 // generateAuditOutput handles parsing and audit generation for a single configuration
 // file, returning the rendered report string. It does NOT perform any I/O emission
 // (stdout or file writes) so that it is safe to call concurrently.
@@ -362,8 +411,8 @@ func generateAuditOutput(
 	cmdLogger *logging.Logger,
 	cmdConfig *config.Config,
 ) (string, error) {
-	// Create context-aware logger for this goroutine with input file field
-	ctxLogger := cmdLogger.WithContext(ctx).WithFields("input_file", fp)
+	// Create logger for this goroutine with input file field
+	ctxLogger := cmdLogger.WithFields("input_file", fp)
 
 	// Sanitize the file path
 	cleanPath := filepath.Clean(fp)
@@ -429,6 +478,7 @@ func generateAuditOutput(
 		AuditMode:       auditMode,
 		SelectedPlugins: auditPlugins,
 		FailuresOnly:    auditFailuresOnly,
+		Blackhat:        auditBlackhat,
 	}
 
 	if auditPluginDir != "" {

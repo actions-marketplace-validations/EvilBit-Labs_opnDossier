@@ -67,19 +67,23 @@ type ModeConfig struct {
 	Comprehensive   bool
 	SelectedPlugins []string
 	TemplateDir     string
+	// Blackhat selects the sharper-tone red-mode ExploitNotes variant (R20).
+	// Tone only — it never changes which findings are reported and never
+	// introduces instructional content. Ignored outside red mode.
+	Blackhat bool
 }
 
 // ValidateModeConfig validates the mode configuration.
+//
+// Mode-name validation delegates to ParseReportMode (the SSOT for valid mode
+// names) so only one switch exists over the ReportMode enum.
 func (mc *ModeController) ValidateModeConfig(config *ModeConfig) error {
 	if config == nil {
 		return ErrModeConfigNil
 	}
 
-	switch config.Mode {
-	case ModeBlue, ModeRed:
-		// Valid modes
-	default:
-		return fmt.Errorf("%w: %s", ErrUnsupportedMode, config.Mode)
+	if _, err := ParseReportMode(string(config.Mode)); err != nil {
+		return err
 	}
 
 	// Normalize plugin names to lowercase for case-insensitive matching,
@@ -192,7 +196,8 @@ func (mc *ModeController) generateBlueReport(_ context.Context, report *Report, 
 
 			// Warn if plugin produced findings with unrecognized severity values.
 			if counts := countSeverities(pluginFindings); counts.unknown > 0 {
-				mc.logger.Warn("Plugin produced findings with unrecognized severity",
+				mc.logger.Warn(
+					"Plugin produced findings with unrecognized severity",
 					"plugin", pluginName,
 					"unknownCount", counts.unknown,
 				)
@@ -213,8 +218,12 @@ func (mc *ModeController) generateBlueReport(_ context.Context, report *Report, 
 		report.Metadata["compliance_check_time"] = time.Now().Format(time.RFC3339)
 	}
 
-	// Add blue team specific analysis
-	report.addSecurityFindings()
+	// Run the shared detection engine once (KTD1-KTD3) and render its
+	// observations as blue hygiene findings, de-duplicated against the
+	// compliance findings just aggregated above.
+	observations := analysis.ScanObservations(report.Configuration)
+
+	report.addSecurityFindings(observations)
 	report.addComplianceAnalysis()
 	report.addRecommendations()
 	report.addStructuredConfigurationTables()
@@ -222,19 +231,33 @@ func (mc *ModeController) generateBlueReport(_ context.Context, report *Report, 
 	return report, nil
 }
 
-// generateRedReport generates an attacker-focused recon report highlighting attack surfaces.
-func (mc *ModeController) generateRedReport(_ context.Context, report *Report, _ *ModeConfig) (*Report, error) {
+// generateRedReport generates an attacker-focused recon report highlighting
+// attack surfaces. It runs the shared detection engine once (KTD1-KTD3) and
+// renders its observations, together with correlated WAN-reachable service and
+// NAT exposures, as reachability-filtered red-mode Findings — WAN-reachable
+// items lead; LAN-only and local management services are excluded from the
+// exposure Findings and retained in the admin-portal inventory metadata;
+// LAN-only/local NAT rules and shared-engine observations are excluded from
+// the report entirely (R15, R16).
+func (mc *ModeController) generateRedReport(_ context.Context, report *Report, config *ModeConfig) (*Report, error) {
 	mc.logger.Debug("Generating red team report")
 
 	// Add red team specific metadata
 	report.Metadata["report_type"] = "red_team"
 	report.Metadata["generation_time"] = time.Now().Format(time.RFC3339)
 
-	// Add red team specific analysis
-	report.addWANExposedServices()
-	report.addWeakNATRules()
-	report.addAdminPortals()
-	report.addAttackSurfaces()
+	observations := analysis.ScanObservations(report.Configuration)
+	// serviceExposures is computed once and shared by the WAN-exposed-service
+	// findings and the admin-portal inventory, which need the identical list.
+	services := serviceExposures(report.Configuration)
+
+	// Order matters: the Finding-producing methods run before addAttackSurfaces,
+	// which de-dupes shared-engine observations against Findings already emitted
+	// for the same config element. blackhat only sharpens ExploitNote tone.
+	report.addWANExposedServices(services, config.Blackhat)
+	report.addWeakNATRules(config.Blackhat)
+	report.addAdminPortals(services)
+	report.addAttackSurfaces(observations, config.Blackhat)
 	report.addEnumerationData()
 
 	return report, nil
@@ -283,70 +306,239 @@ func (r *Report) TotalFindingsCount() int {
 	return total
 }
 
-// addSecurityFindings adds security findings to the blue team report.
-func (r *Report) addSecurityFindings() {
-	// Add placeholder security analysis
+// Rank constants for the R12 severity/reachability ordering below. Lower
+// values sort first (most urgent / most exposed leads).
+const (
+	rankCritical = iota
+	rankHigh
+	rankMedium
+	rankLow
+	rankInfo
+	// rankUnknownSeverity sorts unrecognized severities last. Finding.Severity
+	// is an untyped string (dynamic compliance plugins populate it), so a
+	// garbled value must not fall through a zero-value map lookup and be ranked
+	// as critical — the most-urgent slot — which is exactly backwards.
+	rankUnknownSeverity
+)
+
+const (
+	rankWANReachable = iota
+	rankLANOnly
+	rankLocal
+)
+
+// severityOrder ranks analysis.Severity from most to least urgent for R12
+// ordering (blue leads with the most severe findings).
+var severityOrder = map[analysis.Severity]int{
+	analysis.SeverityCritical: rankCritical,
+	analysis.SeverityHigh:     rankHigh,
+	analysis.SeverityMedium:   rankMedium,
+	analysis.SeverityLow:      rankLow,
+	analysis.SeverityInfo:     rankInfo,
+}
+
+// severityRank returns the sort rank for a severity, mapping an unrecognized
+// value to rankUnknownSeverity (sorts last) rather than letting a zero-value
+// map lookup silently rank it as critical.
+func severityRank(s analysis.Severity) int {
+	if r, ok := severityOrder[s]; ok {
+		return r
+	}
+
+	return rankUnknownSeverity
+}
+
+// reachabilityOrder ranks analysis.Reachability from most to least exposed
+// for R12 ordering (blue leads with the most exposed findings within a
+// severity tier).
+var reachabilityOrder = map[analysis.Reachability]int{
+	analysis.WANReachable: rankWANReachable,
+	analysis.LANOnly:      rankLANOnly,
+	analysis.Local:        rankLocal,
+}
+
+// dedupeAgainstPluginFindings implements the R9/KTD4 de-dupe: a hygiene
+// observation is suppressed only when it references the same originating
+// config element (an exact Component string match) as a finding a fired
+// compliance plugin already emitted — never merely a shared category. This
+// deliberately uses `never merely a shared category` as the failure-safe
+// direction: with today's coarse-grained plugin Component values (e.g.
+// "firewall-rules"), few observations will match, but that under-matching
+// is the safe direction for a security tool — it never hides a finding that
+// should be shown.
+func (r *Report) dedupeAgainstPluginFindings(observations []analysis.Observation) []analysis.Observation {
+	fired := make(map[string]struct{})
+
+	for _, cr := range r.Compliance {
+		for _, f := range cr.Findings {
+			if f.Component != "" {
+				fired[f.Component] = struct{}{}
+			}
+		}
+	}
+
+	var deduped []analysis.Observation
+
+	for _, obs := range observations {
+		if _, matched := fired[obs.Component]; matched {
+			continue
+		}
+
+		deduped = append(deduped, obs)
+	}
+
+	return deduped
+}
+
+// addSecurityFindings renders the shared engine's observations as blue
+// hygiene findings appended to report.Findings (R7, R8), de-duplicated
+// against fired plugin controls (R9) and ordered by severity then
+// reachability (R12).
+func (r *Report) addSecurityFindings(observations []analysis.Observation) {
+	hygiene := r.dedupeAgainstPluginFindings(observations)
+
+	slices.SortStableFunc(hygiene, func(a, b analysis.Observation) int {
+		if sevDiff := severityRank(a.Severity) - severityRank(b.Severity); sevDiff != 0 {
+			return sevDiff
+		}
+
+		return reachabilityOrder[a.Reachability] - reachabilityOrder[b.Reachability]
+	})
+
+	findings := make([]Finding, 0, len(hygiene))
+	for _, obs := range hygiene {
+		findings = append(findings, Finding{Finding: obs.ToFinding()})
+	}
+
+	r.Findings = append(r.Findings, findings...)
+
 	r.Metadata["security_scan_completed"] = true
 	r.Metadata["security_findings_count"] = r.TotalFindingsCount()
 }
 
-// addComplianceAnalysis adds compliance analysis to the blue team report.
+// addComplianceAnalysis derives the compliance-frameworks list from the
+// plugins actually executed (keys of report.Compliance, populated by
+// generateBlueReport), replacing the hardcoded three-framework list (R10).
 func (r *Report) addComplianceAnalysis() {
-	// Add placeholder compliance analysis
-	r.Metadata["compliance_check_completed"] = true
-	r.Metadata["compliance_frameworks"] = []string{"STIG", "NIST", "SANS"}
+	frameworks := make([]string, 0, len(r.Compliance))
+	for name := range r.Compliance {
+		frameworks = append(frameworks, strings.ToUpper(name))
+	}
+
+	slices.Sort(frameworks)
+
+	// Report completion honestly: with an empty Compliance map no compliance
+	// plugin actually executed, so the check is not "completed".
+	r.Metadata["compliance_check_completed"] = len(r.Compliance) > 0
+	r.Metadata["compliance_frameworks"] = frameworks
 }
 
-// addRecommendations adds recommendations to the blue team report.
+// Recommendation groups the recommendation text synthesized for a single
+// configuration component across hygiene findings and compliance-plugin
+// findings (R11).
+type Recommendation struct {
+	// Component identifies the configuration component the recommendations apply to.
+	Component string `json:"component"`
+	// Recommendations lists the distinct recommendation strings for this component.
+	Recommendations []string `json:"recommendations"`
+}
+
+// addRecommendations synthesizes recommendations from the union of blue
+// hygiene findings (report.Findings) and compliance-plugin findings
+// (report.Compliance[*].Findings), grouped by Component, with a count
+// reflecting the real number of distinct recommendations (R11).
 func (r *Report) addRecommendations() {
-	// Add placeholder recommendations
+	grouped := make(map[string][]string)
+	order := make([]string, 0)
+
+	record := func(component, recommendation string) {
+		if recommendation == "" {
+			return
+		}
+
+		if _, exists := grouped[component]; !exists {
+			order = append(order, component)
+		}
+
+		if slices.Contains(grouped[component], recommendation) {
+			return
+		}
+
+		grouped[component] = append(grouped[component], recommendation)
+	}
+
+	for _, f := range r.Findings {
+		record(f.Component, f.Recommendation)
+	}
+
+	for _, cr := range r.Compliance {
+		for _, f := range cr.Findings {
+			record(f.Component, f.Recommendation)
+		}
+	}
+
+	slices.Sort(order)
+
+	recommendations := make([]Recommendation, 0, len(order))
+	count := 0
+
+	for _, component := range order {
+		recs := grouped[component]
+		// Sort within each component: recs accumulate from r.Compliance, whose
+		// map iteration order is non-deterministic, so unsorted output would
+		// vary run to run (§3.1 map-iteration determinism).
+		slices.Sort(recs)
+		recommendations = append(recommendations, Recommendation{Component: component, Recommendations: recs})
+		count += len(recs)
+	}
+
 	r.Metadata["recommendations_generated"] = true
-	r.Metadata["recommendation_count"] = 0
+	r.Metadata["recommendation_count"] = count
+	r.Metadata["recommendations"] = recommendations
 }
 
-// addStructuredConfigurationTables adds structured configuration tables to the blue team report.
+// ConfigSummary captures per-category configuration-element counts from the
+// normalized configuration using explicit named fields rather than
+// category/count rows (R13). This keeps the structured-config surface typed
+// (AGENTS.md: prefer structured config data over flat summary tables); any
+// future audit overlays belong in their own metadata keys rather than being
+// encoded as additional summary rows.
+type ConfigSummary struct {
+	// Interfaces is the number of configured interfaces.
+	Interfaces int `json:"interfaces" yaml:"interfaces"`
+	// FirewallRules is the number of configured firewall rules.
+	FirewallRules int `json:"firewallRules" yaml:"firewallRules"`
+	// NATRules is the combined number of inbound and outbound NAT rules.
+	NATRules int `json:"natRules" yaml:"natRules"`
+	// Users is the number of configured user accounts.
+	Users int `json:"users" yaml:"users"`
+}
+
+// addStructuredConfigurationTables builds the configuration summary from
+// actual configuration counts (interfaces, firewall rules, NAT rules,
+// users), replacing the hardcoded table count (R13).
 func (r *Report) addStructuredConfigurationTables() {
-	// Add placeholder structured tables
+	var summary ConfigSummary
+
+	if cfg := r.Configuration; cfg != nil {
+		summary = ConfigSummary{
+			Interfaces:    len(cfg.Interfaces),
+			FirewallRules: len(cfg.FirewallRules),
+			NATRules:      len(cfg.NAT.InboundRules) + len(cfg.NAT.OutboundRules),
+			Users:         len(cfg.Users),
+		}
+	}
+
 	r.Metadata["structured_tables_generated"] = true
-	r.Metadata["table_count"] = 5
-}
-
-// addWANExposedServices adds WAN-exposed services analysis to the red team report.
-func (r *Report) addWANExposedServices() {
-	// Add placeholder WAN exposure analysis
-	r.Metadata["wan_exposure_scan_completed"] = true
-	r.Metadata["exposed_services_count"] = 0
-}
-
-// addWeakNATRules adds weak NAT rules analysis to the red team report.
-func (r *Report) addWeakNATRules() {
-	// Add placeholder weak NAT analysis
-	r.Metadata["weak_nat_scan_completed"] = true
-	r.Metadata["weak_nat_rules_count"] = 0
-}
-
-// addAdminPortals adds admin portals analysis to the red team report.
-func (r *Report) addAdminPortals() {
-	// Add placeholder admin portal analysis
-	r.Metadata["admin_portal_scan_completed"] = true
-	r.Metadata["admin_portals_found"] = 1
-}
-
-// addAttackSurfaces adds attack surfaces analysis to the red team report.
-func (r *Report) addAttackSurfaces() {
-	// Add placeholder attack surface analysis
-	r.Metadata["attack_surface_scan_completed"] = true
-	r.Metadata["attack_vectors_identified"] = 0
-}
-
-// addEnumerationData adds enumeration data to the red team report.
-func (r *Report) addEnumerationData() {
-	// Add placeholder enumeration data
-	r.Metadata["enumeration_completed"] = true
-	r.Metadata["enumeration_targets"] = []string{"services", "ports"}
+	r.Metadata["configuration_summary"] = summary
 }
 
 // ParseReportMode parses a string into a ReportMode, returning an error if invalid.
+//
+// This is the single source of truth (SSOT) for valid ReportMode names. All
+// mode-name validation elsewhere in the package (including
+// ModeController.ValidateModeConfig) must delegate here so new modes only need
+// to be added in this switch.
 func ParseReportMode(s string) (ReportMode, error) {
 	mode := ReportMode(strings.ToLower(s))
 	switch mode {

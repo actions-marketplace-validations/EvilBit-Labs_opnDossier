@@ -69,6 +69,7 @@ func TestFormatLeaseTime(t *testing.T) {
 	}
 }
 
+//nolint:funlen // test table or data declaration; length is in data not logic
 func TestHasAdvancedDHCPConfig(t *testing.T) {
 	t.Parallel()
 
@@ -85,9 +86,9 @@ func TestHasAdvancedDHCPConfig(t *testing.T) {
 		{
 			name: "basic config only",
 			dhcp: common.DHCPScope{
-				Enabled:   true,
-				Gateway:   "192.168.1.1",
-				DNSServer: "8.8.8.8",
+				Enabled:    true,
+				Gateway:    "192.168.1.1",
+				DNSServers: []string{"8.8.8.8"},
 			},
 			want: false,
 		},
@@ -223,6 +224,7 @@ func TestHasAdvancedDHCPConfig(t *testing.T) {
 	}
 }
 
+//nolint:funlen // test table or data declaration; length is in data not logic
 func TestHasDHCPv6Config(t *testing.T) {
 	t.Parallel()
 
@@ -239,9 +241,9 @@ func TestHasDHCPv6Config(t *testing.T) {
 		{
 			name: "basic ipv4 config only",
 			dhcp: common.DHCPScope{
-				Enabled:   true,
-				Gateway:   "192.168.1.1",
-				DNSServer: "8.8.8.8",
+				Enabled:    true,
+				Gateway:    "192.168.1.1",
+				DNSServers: []string{"8.8.8.8"},
 			},
 			want: false,
 		},
@@ -501,11 +503,11 @@ func TestBuildDHCPSummaryTableSet(t *testing.T) {
 			name: "single interface with basic config",
 			scopes: []common.DHCPScope{
 				{
-					Interface: "lan",
-					Enabled:   true,
-					Gateway:   "192.168.1.1",
-					Range:     common.DHCPRange{From: "192.168.1.100", To: "192.168.1.200"},
-					DNSServer: "8.8.8.8",
+					Interface:  "lan",
+					Enabled:    true,
+					Gateway:    "192.168.1.1",
+					Range:      common.DHCPRange{From: "192.168.1.100", To: "192.168.1.200"},
+					DNSServers: []string{"8.8.8.8"},
 				},
 			},
 			wantContains: []string{"lan", "192.168.1.1", "192.168.1.100", "192.168.1.200", "8.8.8.8"},
@@ -542,7 +544,7 @@ func TestBuildDHCPSummaryTableSet(t *testing.T) {
 					Enabled:    true,
 					Gateway:    "192.168.1.1",
 					Range:      common.DHCPRange{From: "192.168.1.100", To: "192.168.1.200"},
-					DNSServer:  "8.8.8.8",
+					DNSServers: []string{"8.8.8.8"},
 					WINSServer: "192.168.1.5",
 					NTPServer:  "pool.ntp.org",
 				},
@@ -755,6 +757,7 @@ func TestBuildAdvancedDHCPItems(t *testing.T) {
 	}
 }
 
+//nolint:funlen // test table or data declaration; length is in data not logic
 func TestBuildDHCPv6Items(t *testing.T) {
 	t.Parallel()
 
@@ -935,40 +938,6 @@ func flattenTableSet(ts *markdown.TableSet) []string {
 // containsString checks if a slice contains a specific string.
 func containsString(slice []string, s string) bool {
 	return slices.Contains(slice, s)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// EscapePipeForMarkdown Tests
-// ─────────────────────────────────────────────────────────────────────────────
-
-func TestEscapePipeForMarkdown(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{"no pipes", "hello world", "hello world"},
-		{"single pipe", "a|b", "a\\|b"},
-		{"multiple pipes", "a|b|c", "a\\|b\\|c"},
-		{"empty string", "", ""},
-		{"pipe at start", "|hello", "\\|hello"},
-		{"pipe at end", "hello|", "hello\\|"},
-		{"only pipe", "|", "\\|"},
-		{"adjacent pipes", "a||b", "a\\|\\|b"},
-		{"pipes with spaces", "a | b | c", "a \\| b \\| c"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			result := EscapePipeForMarkdown(tt.input)
-			if result != tt.expected {
-				t.Errorf("EscapePipeForMarkdown(%q) = %q, want %q", tt.input, result, tt.expected)
-			}
-		})
-	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ import (
 	"github.com/EvilBit-Labs/opnDossier/internal/constants"
 	"github.com/EvilBit-Labs/opnDossier/internal/logging"
 	"github.com/EvilBit-Labs/opnDossier/internal/validator"
+	"github.com/EvilBit-Labs/opnDossier/pkg/parser"
 	_ "github.com/EvilBit-Labs/opnDossier/pkg/parser/opnsense"       // self-registers OPNsense parser via init()
 	pfparser "github.com/EvilBit-Labs/opnDossier/pkg/parser/pfsense" // self-registers pfSense parser via init()
 	"github.com/EvilBit-Labs/opnDossier/pkg/schema/pfsense"
@@ -33,8 +34,8 @@ var (
 // defaultLoggerConfig provides the initial logger configuration used during init.
 // It is defined as a variable to allow fault injection in tests.
 var defaultLoggerConfig = logging.Config{ //nolint:gochecknoglobals // test override hook
-	Level:           "info",
-	Format:          "text",
+	Level:           logLevelInfo,
+	Format:          defaultLogFormat,
 	Output:          os.Stderr,
 	ReportCaller:    true,
 	ReportTimestamp: true,
@@ -43,33 +44,33 @@ var defaultLoggerConfig = logging.Config{ //nolint:gochecknoglobals // test over
 // lightweightCommands lists command names that don't need full initialization.
 // These commands skip config file loading and heavy logger setup for faster startup.
 var lightweightCommands = map[string]bool{ //nolint:gochecknoglobals // Static command list
-	"version":    true,
-	"help":       true,
-	"completion": true,
+	cmdNameVersion:    true,
+	cmdNameHelp:       true,
+	cmdNameCompletion: true,
 }
 
 // rootCmd represents the base command when called without any subcommands.
 var rootCmd = &cobra.Command{ //nolint:gochecknoglobals // Cobra root command
-	Use:   "opnDossier",
-	Short: "opnDossier: A CLI tool for processing OPNsense configuration files.",
-	Long: `opnDossier is a command-line interface (CLI) tool designed to process OPNsense firewall
-configuration files (config.xml) and convert them into human-readable formats,
-primarily Markdown. This tool is built to assist network administrators and
-security professionals in documenting, auditing, and understanding their
-OPNsense configurations more effectively.
+	Use:   "opndossier",
+	Short: "opnDossier: A CLI tool for processing OPNsense and pfSense configuration files.",
+	Long: `opnDossier is a command-line interface (CLI) tool designed to process OPNsense
+and pfSense firewall configuration files (config.xml) and convert them into
+human-readable formats, primarily Markdown. This tool is built to assist network
+administrators and security professionals in documenting, auditing, and
+understanding their firewall configurations more effectively.
 
 WORKFLOW EXAMPLES:
   # Basic conversion workflow
-  opnDossier convert config.xml -o documentation.md
+  opndossier convert config.xml -o documentation.md
 
   # Development workflow with verbose logging
-  opnDossier --verbose convert config.xml --format json
+  opndossier --verbose convert config.xml --format json
 
   # Generate comprehensive report
-  opnDossier convert config.xml --comprehensive
+  opndossier convert config.xml --comprehensive
 
   # Validation workflow
-  opnDossier validate config.xml && opnDossier convert config.xml -o documentation.md`,
+  opndossier validate config.xml && opndossier convert config.xml -o documentation.md`,
 	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 		// Fast path: Skip heavy initialization for lightweight commands
 		// This significantly improves startup time for --help, version, etc.
@@ -90,7 +91,7 @@ func isLightweightCommand(cmd *cobra.Command) bool {
 
 	// Check if command has the lightweight annotation
 	if cmd.Annotations != nil {
-		if _, ok := cmd.Annotations["lightweight"]; ok {
+		if _, ok := cmd.Annotations[annotationLightweight]; ok {
 			return true
 		}
 	}
@@ -102,8 +103,15 @@ func isLightweightCommand(cmd *cobra.Command) bool {
 // This skips config file loading and uses minimal defaults for fast startup.
 func setupLightweightContext(cmd *cobra.Command) error {
 	// Use minimal default config - no file loading, no env var processing
+	// Config.Format is deprecated in favour of Export.Format, but cmd/convert.go
+	// and cmd/config_show.go still read the flat field for v1.x config
+	// compatibility. Setting Export.Format here instead would change which
+	// field those readers see on the lightweight path, so the flat field stays
+	// until the v2.0 removal tracked in CHANGELOG Unreleased/Deprecated.
+
+	//nolint:staticcheck // SA1019: exercising deprecated flat field for backward-compat coverage.
 	cfg = &config.Config{
-		Format: "markdown",
+		Format: defaultFormat,
 	}
 
 	// Create minimal command context with default logger
@@ -137,22 +145,22 @@ func setupFullContext(cmd *cobra.Command) error {
 	//   (default) → warn
 	//   --verbose → info (includes warn + error)
 	//   --debug   → debug (includes info + warn + error)
-	logLevel := "warn"
+	logLevel := logLevelWarn
 
 	switch {
 	case cfg.IsQuiet():
-		logLevel = "error"
+		logLevel = logLevelError
 	case cfg.IsDebug():
-		logLevel = "debug"
+		logLevel = logLevelDebug
 	case cfg.IsVerbose():
-		logLevel = "info"
+		logLevel = logLevelInfo
 	}
 
 	// Create new logger with centralized configuration
 	var loggerErr error
 	logger, loggerErr = logging.New(logging.Config{
 		Level:           logLevel,
-		Format:          "text", // Log format is hardcoded to "text" for consistency
+		Format:          defaultLogFormat, // Uses defaultLogFormat (text) for consistent output
 		Output:          os.Stderr,
 		ReportCaller:    true,
 		ReportTimestamp: true,
@@ -191,61 +199,66 @@ func init() {
 	// Configuration flags
 	rootCmd.PersistentFlags().
 		StringVar(&cfgFile, "config", "", "Configuration file path (default: $HOME/.opnDossier.yaml)")
-	setFlagAnnotation(rootCmd.PersistentFlags(), "config", []string{"configuration"})
+	setFlagAnnotation(rootCmd.PersistentFlags(), "config", []flagCategory{categoryConfiguration})
 
 	// Output control flags (mutually exclusive: quiet < default(warn) < verbose < debug)
 	rootCmd.PersistentFlags().
-		BoolP("verbose", "v", false, "Enable info-level logging (warnings, errors, and informational messages)")
-	setFlagAnnotation(rootCmd.PersistentFlags(), "verbose", []string{"output"})
+		BoolP(flagVerbose, "v", false, "Enable info-level logging (warnings, errors, and informational messages)")
+	setFlagAnnotation(rootCmd.PersistentFlags(), flagVerbose, []flagCategory{categoryOutput})
 	rootCmd.PersistentFlags().
-		Bool("debug", false, "Enable debug-level logging (all messages, for troubleshooting)")
-	setFlagAnnotation(rootCmd.PersistentFlags(), "debug", []string{"output"})
-	rootCmd.PersistentFlags().BoolP("quiet", "q", false, "Suppress all output except errors and critical messages")
-	setFlagAnnotation(rootCmd.PersistentFlags(), "quiet", []string{"output"})
+		Bool(flagDebug, false, "Enable debug-level logging (all messages, for troubleshooting)")
+	setFlagAnnotation(rootCmd.PersistentFlags(), flagDebug, []flagCategory{categoryOutput})
+	rootCmd.PersistentFlags().BoolP(flagQuiet, "q", false, "Suppress all output except errors and critical messages")
+	setFlagAnnotation(rootCmd.PersistentFlags(), flagQuiet, []flagCategory{categoryOutput})
 
 	// Logging control flags
 	rootCmd.PersistentFlags().
 		Bool("timestamps", false, "Include timestamps in log output")
-	setFlagAnnotation(rootCmd.PersistentFlags(), "timestamps", []string{"logging"})
+	setFlagAnnotation(rootCmd.PersistentFlags(), "timestamps", []flagCategory{categoryLogging})
 
 	// Progress and display control flags
 	rootCmd.PersistentFlags().
 		Bool("no-progress", false, "Disable progress indicators")
-	setFlagAnnotation(rootCmd.PersistentFlags(), "no-progress", []string{"progress"})
+	setFlagAnnotation(rootCmd.PersistentFlags(), "no-progress", []flagCategory{categoryProgress})
 	rootCmd.PersistentFlags().
 		String("color", "auto", "Color output mode (auto, always, never)")
-	setFlagAnnotation(rootCmd.PersistentFlags(), "color", []string{"display"})
+	setFlagAnnotation(rootCmd.PersistentFlags(), "color", []flagCategory{categoryDisplay})
 	rootCmd.PersistentFlags().
 		Bool("minimal", false, "Minimal output mode (suppresses progress and verbose messages)")
-	setFlagAnnotation(rootCmd.PersistentFlags(), "minimal", []string{"output"})
+	setFlagAnnotation(rootCmd.PersistentFlags(), "minimal", []flagCategory{categoryOutput})
 	// Note: --json-output is registered on validateCmd only (not here as persistent).
 	// It has no effect on other commands. See issue #479, GOTCHAS.md §5.1.
 
-	// Parsing control flags
+	// Parsing control flags. The supported-devices list is derived from the
+	// parser registry so help text stays accurate as devices are added or
+	// removed. SupportedDevices() is the same source used by
+	// ValidateDeviceType error messages (see shared_flags.go).
 	rootCmd.PersistentFlags().
-		StringVar(&sharedDeviceType, "device-type", "", "Force device type (supported: opnsense). Bypasses auto-detection.")
-	setFlagAnnotation(rootCmd.PersistentFlags(), "device-type", []string{"parsing"})
+		StringVar(&sharedDeviceType, "device-type", "",
+			fmt.Sprintf("Force device type (supported: %s). Bypasses auto-detection.",
+				parser.DefaultRegistry().SupportedDevices()))
+	setFlagAnnotation(rootCmd.PersistentFlags(), "device-type", []flagCategory{categoryParsing})
 
 	// Flag groups for better organization
 	rootCmd.PersistentFlags().SortFlags = false
 
 	// Mark mutually exclusive flags
 	// Log level flags are mutually exclusive
-	rootCmd.MarkFlagsMutuallyExclusive("verbose", "quiet", "debug")
+	rootCmd.MarkFlagsMutuallyExclusive(flagVerbose, flagQuiet, flagDebug)
 
 	// Add version command with lightweight annotation for fast startup
 	versionCmd := &cobra.Command{
-		Use:     "version",
+		Use:     cmdNameVersion,
 		Short:   "Display version information",
 		Long:    "Display the current version of opnDossier and build information.",
-		GroupID: "utility",
+		GroupID: groupUtility,
 		Annotations: map[string]string{
-			"lightweight": "true", // Skip heavy initialization for fast startup
+			annotationLightweight: annotationValueOn, // Skip heavy initialization for fast startup
 		},
 		Run: func(_ *cobra.Command, _ []string) {
-			fmt.Printf("opnDossier version %s\n", constants.Version)
+			fmt.Printf("opndossier version %s\n", constants.Version)
 			fmt.Printf("Build date: %s\n", getBuildDate())
-			fmt.Printf("Git commit: %s\n", getGitCommit())
+			fmt.Printf("Git commit: %s\n", GitCommit())
 		},
 	}
 	rootCmd.AddCommand(versionCmd)
@@ -255,8 +268,8 @@ func init() {
 	convCmd := &cobra.Command{
 		Use:               "conv [file ...]",
 		Short:             "Alias for 'convert' command",
-		Long:              "Alias for the 'convert' command. Converts OPNsense configuration files to structured formats.",
-		GroupID:           "core",
+		Long:              "Alias for the 'convert' command. Converts OPNsense or pfSense configuration files to structured formats.",
+		GroupID:           groupCore,
 		ValidArgsFunction: ValidXMLFiles,
 		RunE:              convertCmd.RunE,
 		Args:              convertCmd.Args,
@@ -268,15 +281,15 @@ func init() {
 
 	// Add command groups for better organization
 	rootCmd.AddGroup(&cobra.Group{
-		ID:    "core",
+		ID:    groupCore,
 		Title: "Core Commands",
 	})
 	rootCmd.AddGroup(&cobra.Group{
-		ID:    "audit",
+		ID:    groupAudit,
 		Title: "Audit & Compliance",
 	})
 	rootCmd.AddGroup(&cobra.Group{
-		ID:    "utility",
+		ID:    groupUtility,
 		Title: "Utility Commands",
 	})
 
@@ -320,10 +333,17 @@ func initializeDefaultLogger() {
 
 // wirePfSenseValidator injects the internal/validator validation function into
 // the pfSense parser package. This bridges pkg/ → internal/ without violating
-// public package purity (§5.24): the function variable lives in pkg/, the
+// public package purity (§5.24): the injection point lives in pkg/, the
 // implementation lives in internal/, and the wiring happens here in cmd/.
+//
+// The call goes through [pfparser.SetValidator], which is guarded by a
+// sync.Once. This MUST run before any dynamic plugin is loaded (via
+// audit.InitializePlugins / plugin.Open) — plugin.Open fires the plugin's
+// init() at load time, and the sync.Once is our enforcement point against
+// a malicious plugin stomping the validator (see GOTCHAS.md §20). init()
+// executes before main(), so this init() call reliably wins the race.
 func wirePfSenseValidator() {
-	pfparser.ValidateFunc = func(doc *pfsense.Document) error {
+	pfparser.SetValidator(func(doc *pfsense.Document) error {
 		errs := validator.ValidatePfSenseDocument(doc)
 		if len(errs) == 0 {
 			return nil
@@ -336,7 +356,7 @@ func wirePfSenseValidator() {
 		}
 
 		return fmt.Errorf("pfSense validation failed (%d errors): %s", len(errs), strings.Join(msgs, "; "))
-	}
+	})
 }
 
 // createFallbackLogger returns a minimal stderr-backed logger and reports the failure.
@@ -345,8 +365,8 @@ func createFallbackLogger(reason error) *logging.Logger {
 	fmt.Fprintf(os.Stderr, "warning: unable to initialize logging (%v). Falling back to stderr output.\n", reason)
 
 	fallback, err := logging.New(logging.Config{
-		Level:           "error",
-		Format:          "text",
+		Level:           logLevelError,
+		Format:          defaultLogFormat,
 		Output:          os.Stderr,
 		ReportCaller:    false,
 		ReportTimestamp: false,
@@ -381,7 +401,14 @@ func GetFlagsByCategory(cmd *cobra.Command) map[string][]string {
 }
 
 // setFlagAnnotation safely sets a flag annotation and logs any errors.
-func setFlagAnnotation(flags *pflag.FlagSet, flagName string, values []string) {
+// The typed flagCategory parameter is what makes callsites compile-time
+// safe against accidentally passing a groupID or unrelated string.
+func setFlagAnnotation(flags *pflag.FlagSet, flagName string, categories []flagCategory) {
+	values := make([]string, len(categories))
+	for i, c := range categories {
+		values[i] = string(c)
+	}
+
 	if err := flags.SetAnnotation(flagName, "category", values); err != nil {
 		// In init functions, we can't return errors, so we log them
 		// This should never happen with valid flag names
@@ -394,8 +421,9 @@ func getBuildDate() string {
 	return buildDate
 }
 
-// getGitCommit returns the git commit from ldflags or a default value.
-func getGitCommit() string {
+// GitCommit returns the git commit injected at build time via ldflags, or
+// "unknown" for a plain `go build`. Exported so main can hand it to fang.
+func GitCommit() string {
 	return gitCommit
 }
 

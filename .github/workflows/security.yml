@@ -1,0 +1,88 @@
+#
+# Security scanning workflow for opnDossier
+#
+# Runs continuous vulnerability and static-analysis scans:
+# - govulncheck: Go vulnerability database scan across the module graph
+# - Trivy (filesystem): SCA + misconfiguration scan of the working tree
+#
+# CodeQL is intentionally NOT a job here: GitHub's repo-level "default setup"
+# for code scanning covers CodeQL, and the advanced-setup CodeQL action rejects
+# SARIF uploads with "CodeQL analyses from advanced configurations cannot be
+# processed when the default setup is enabled." If default setup is ever
+# disabled, re-add a `codeql` job at that point.
+#
+# Triggers on pushes to main, all pull requests, and weekly on Mondays 06:00 UTC.
+# Findings are uploaded to the GitHub Security tab as SARIF where supported.
+#
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # Weekly on Mondays at 06:00 UTC
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # govulncheck — Go vulnerability database scan
+  # ─────────────────────────────────────────────────────────────────────────
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        # Pinned to v1.3.0: v1.4.0 bundles golang.org/x/tools v0.46.0, whose
+        # typesinternal.ForEachElement panics ("called on type containing
+        # *types.TypeParam") when analyzing this module's generics, crashing the
+        # scan. v1.3.0 bundles x/tools v0.44.0, which predates the bug. The vuln
+        # database is fetched at runtime, so scan coverage is unaffected by the
+        # scanner pin. Revisit once a govulncheck release ships an x/tools that
+        # fixes the ForEachElement TypeParam panic (track golang.org/x/tools
+        # releases > v0.46.0 and bump to @latest once verified).
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Trivy (filesystem) — dependency + misconfiguration scan
+  # ─────────────────────────────────────────────────────────────────────────
+  trivy-fs:
+    name: Trivy (filesystem)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH,MEDIUM
+
+      - name: Upload Trivy SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs

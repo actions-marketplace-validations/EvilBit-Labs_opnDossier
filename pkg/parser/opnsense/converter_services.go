@@ -2,13 +2,25 @@ package opnsense
 
 import (
 	"fmt"
-	"maps"
+	"net/netip"
 	"slices"
 	"strings"
+	"unicode"
 
 	common "github.com/EvilBit-Labs/opnDossier/pkg/model"
 	schema "github.com/EvilBit-Labs/opnDossier/pkg/schema/opnsense"
 )
+
+// knownUnboundPlusVersions enumerates the OPNsense <unboundplus version="...">
+// attribute values this converter has been validated against. When the
+// attribute is present but outside this set, convertDNS emits a warning —
+// the same class of silent-drift risk documented for Kea DHCP (GOTCHAS 18.1).
+var knownUnboundPlusVersions = map[string]struct{}{
+	"":      {}, // empty/unset is accepted
+	"1.0.0": {},
+	"1.0.1": {},
+	"1.0.2": {},
+}
 
 // convertDHCP maps doc.Dhcpd.Items to []common.DHCPScope.
 func (c *converter) convertDHCP(doc *schema.OpnSenseDocument) []common.DHCPScope {
@@ -18,7 +30,14 @@ func (c *converter) convertDHCP(doc *schema.OpnSenseDocument) []common.DHCPScope
 	}
 
 	result := make([]common.DHCPScope, 0, len(items))
-	for _, key := range slices.Sorted(maps.Keys(items)) {
+	// Single-allocation sorted-keys idiom; see comment in convertInterfaces.
+	keys := make([]string, 0, len(items))
+	for k := range items {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+
+	for _, key := range keys {
 		d := items[key]
 		scope := common.DHCPScope{
 			Interface:  key,
@@ -26,10 +45,10 @@ func (c *converter) convertDHCP(doc *schema.OpnSenseDocument) []common.DHCPScope
 			Enabled:    d.Enable == xmlBoolTrue,
 			Range:      common.DHCPRange{From: d.Range.From, To: d.Range.To},
 			Gateway:    d.Gateway,
-			DNSServer:  d.Dnsserver,
 			NTPServer:  d.Ntpserver,
 			WINSServer: d.Winsserver,
 		}
+		scope.SetDNSServers(d.Dnsserver)
 
 		scope.AdvancedV4 = c.buildDHCPAdvancedV4(d)
 		scope.AdvancedV6 = c.buildDHCPAdvancedV6(d)
@@ -157,14 +176,44 @@ func (c *converter) buildDHCPAdvancedV6(d schema.DhcpdInterface) *common.DHCPAdv
 	return &v6
 }
 
-// convertDNS maps doc.Unbound, doc.DNSMasquerade, and system DNS to common.DNSConfig.
+// convertDNS maps doc.Unbound, doc.DNSMasquerade, doc.OPNsense.UnboundPlus, and
+// system DNS to common.DNSConfig. Advanced Unbound fields (private-address list,
+// hide-identity/version, query/reply logging, prefetch) come from the MVC model
+// section <OPNsense><unboundplus><advanced>. Legacy <unbound> remains canonical
+// for Enabled/DNSSEC/DNSSECStripped to preserve backward compatibility.
 func (c *converter) convertDNS(doc *schema.OpnSenseDocument) common.DNSConfig {
+	unboundPlus := doc.OPNsense.UnboundPlus
+	if _, ok := knownUnboundPlusVersions[unboundPlus.Version]; !ok {
+		c.addWarning(
+			"DNS.Unbound.UnboundPlus.Version",
+			unboundPlus.Version,
+			"unrecognized OPNsense Unbound MVC model version; element mapping may be stale",
+			common.SeverityMedium,
+		)
+	}
+
+	advanced := unboundPlus.Advanced
+	var (
+		privateAddress           []string
+		privateAddressConfigured bool
+	)
+	if advanced.Privateaddress != nil {
+		privateAddressConfigured = true
+		privateAddress = c.splitPrivateAddress(*advanced.Privateaddress)
+	}
 	return common.DNSConfig{
-		Servers: strings.Fields(doc.System.DNSServer),
+		Servers: fieldsOfEach(doc.System.DNSServers),
 		Unbound: common.UnboundConfig{
-			Enabled:        doc.Unbound.Enable == xmlBoolTrue,
-			DNSSEC:         doc.Unbound.Dnssec == xmlBoolTrue,
-			DNSSECStripped: doc.Unbound.Dnssecstripped == xmlBoolTrue,
+			Enabled:                  doc.Unbound.Enable == xmlBoolTrue,
+			DNSSEC:                   doc.Unbound.Dnssec == xmlBoolTrue,
+			DNSSECStripped:           doc.Unbound.Dnssecstripped == xmlBoolTrue,
+			PrivateAddress:           privateAddress,
+			PrivateAddressConfigured: privateAddressConfigured,
+			HideIdentity:             advanced.Hideidentity == xmlBoolTrue,
+			HideVersion:              advanced.Hideversion == xmlBoolTrue,
+			LogQueries:               advanced.Logqueries == xmlBoolTrue,
+			LogReplies:               advanced.Logreplies == xmlBoolTrue,
+			Prefetch:                 advanced.Prefetch == xmlBoolTrue,
 		},
 		DNSMasq: common.DNSMasqConfig{
 			Enabled:         bool(doc.DNSMasquerade.Enable),
@@ -173,6 +222,47 @@ func (c *converter) convertDNS(doc *schema.OpnSenseDocument) common.DNSConfig {
 			Forwarders:      c.convertForwarders(doc.DNSMasquerade.Forwarders),
 		},
 	}
+}
+
+// splitPrivateAddress parses the <privateaddress> string into a validated
+// slice of CIDR / bare-IP tokens. Tokens are split on commas and any Unicode
+// whitespace (via unicode.IsSpace), covering the separators OPNsense's webUI
+// produces plus NBSP and other Unicode whitespace that might survive
+// copy/paste edits. Each token must parse as either a netip.Prefix (CIDR) or
+// a netip.Addr (bare IP); the original token text is preserved verbatim when
+// accepted. Invalid tokens are dropped with a conversion warning (GOTCHAS 5.2
+// pattern). Returns nil (not an empty slice) when the resulting slice would be
+// empty, so reflect-based diffs stay stable and downstream consumers can
+// distinguish "never populated" from "populated but filtered to empty".
+func (c *converter) splitPrivateAddress(raw string) []string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
+	if len(fields) == 0 {
+		return nil
+	}
+
+	result := make([]string, 0, len(fields))
+	for _, entry := range fields {
+		if _, err := netip.ParsePrefix(entry); err == nil {
+			result = append(result, entry)
+			continue
+		}
+		if _, err := netip.ParseAddr(entry); err == nil {
+			result = append(result, entry)
+			continue
+		}
+		c.addWarning(
+			"DNS.Unbound.PrivateAddress",
+			entry,
+			"invalid CIDR or IP in Unbound private-address list; entry dropped",
+			common.SeverityMedium,
+		)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // convertDNSMasqHosts maps []schema.DNSMasqHost to []common.DNSMasqHost.
@@ -232,7 +322,23 @@ func (c *converter) convertForwarders(fwds []schema.ForwarderGroup) []common.For
 }
 
 // convertVPN maps OpenVPN, WireGuard, and IPsec sections to common.VPN.
+//
+// Schema pointer-vs-value inconsistency (landmine for future refactorers):
+//   - doc.OpenVPN is a value type (schema.OpenVPN, not a pointer) — it always exists.
+//   - doc.OPNsense.Wireguard is a pointer — it may be nil when absent.
+//   - doc.OPNsense.IPsec is a pointer — it may be nil when absent.
+//
+// The OpenVPN sub-converters (convertOpenVPNServers/Clients/CSCs) all handle
+// empty slices gracefully, so no explicit nil-guard on doc.OpenVPN is needed
+// today. If doc.OpenVPN is ever changed to a pointer type for consistency with
+// Wireguard/IPsec, add an explicit nil-guard here before dereferencing.
 func (c *converter) convertVPN(doc *schema.OpnSenseDocument) common.VPN {
+	// doc.OpenVPN is a value type (schema.OpenVPN, not a pointer),
+	// so the nil-style guard used for Wireguard/IPsec below would be
+	// vacuous here. Preserved as a comment for parity with sibling
+	// converters (pattern enforcement), and as a landmine for anyone
+	// who later changes doc.OpenVPN to a pointer type — see also
+	// doc.OPNsense.Wireguard which *is* a pointer.
 	vpn := common.VPN{
 		OpenVPN: common.OpenVPNConfig{
 			Servers:               c.convertOpenVPNServers(doc.OpenVPN.Servers),
@@ -493,15 +599,22 @@ func (c *converter) convertGatewayGroups(groups []schema.GatewayGroup) []common.
 }
 
 // convertStaticRoutes maps []schema.StaticRoute to []common.StaticRoute.
+//
+// Empty <route/> placeholders are skipped so they neither surface as blank
+// routes in exported output nor flip CommonDevice.HasRoutes to true for a
+// device with no routing configuration. The result is grown on demand rather
+// than preallocated because the loop may skip entries.
 func (c *converter) convertStaticRoutes(routes []schema.StaticRoute) []common.StaticRoute {
-	if len(routes) == 0 {
-		return nil
-	}
+	var result []common.StaticRoute
 
-	result := make([]common.StaticRoute, 0, len(routes))
 	for _, r := range routes {
+		if r.IsPlaceholder() {
+			continue
+		}
+
 		result = append(result, common.StaticRoute{
 			Network:     r.Network,
+			NetworkRef:  c.namedObjects.Ref(r.Network),
 			Gateway:     r.Gateway,
 			Description: r.Descr,
 			Disabled:    bool(r.Disabled),
@@ -770,4 +883,18 @@ func collectNonEmpty(values ...string) []string {
 	}
 
 	return result
+}
+
+// fieldsOfEach flattens whitespace-separated members inside each element of
+// vals, preserving the tolerance this value had when it was a single
+// space-separated string.
+func fieldsOfEach(vals []string) []string {
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		out = append(out, strings.Fields(v)...)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

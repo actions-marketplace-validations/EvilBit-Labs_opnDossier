@@ -2,6 +2,9 @@ package sanitizer
 
 import (
 	"bytes"
+	"encoding/xml"
+	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
@@ -105,8 +108,9 @@ func TestSanitizeXML_PrivateIP_Aggressive(t *testing.T) {
 	if strings.Contains(result, "192.168.1.1") {
 		t.Error("Private IP was not redacted in aggressive mode")
 	}
-	// Should be mapped to 10.0.0.x format
-	if !strings.Contains(result, "10.0.0.") {
+	// The replacement is a marker, not a substitute address, so it can never be
+	// mistaken for real data or collide with another host in the same file.
+	if !strings.Contains(result, "[REDACTED-PRIVATE-IP-") {
 		t.Errorf("Private IP mapping not found in output: %s", result)
 	}
 }
@@ -219,6 +223,317 @@ func TestSanitizeXML_Email(t *testing.T) {
 	}
 	if !strings.Contains(result, "@example.com") {
 		t.Errorf("Email redaction pattern not found in: %s", result)
+	}
+}
+
+// TestSanitizeXML_OpenVPNStaticKey verifies the sanitizer redacts OpenVPN
+// TLS auth / static-key material across the XML element names OPNsense emits
+// (<tls> on legacy server/client configs and <StaticKeys> on the MVC model).
+// Regression coverage for SEC-H1 / todos #104 + #127: prior to the fix the
+// `sanitize` subcommand leaked the raw HMAC key needed to forge OpenVPN
+// handshakes. Tests run in all three sanitizer modes because the private_key
+// rule is active in every mode.
+func TestSanitizeXML_OpenVPNStaticKey(t *testing.T) {
+	const staticKeyBody = "-----BEGIN OpenVPN Static key V1-----\n" +
+		"abc123def456789001234567890abcdef\n" +
+		"-----END OpenVPN Static key V1-----"
+
+	type fixture struct {
+		name string
+		xml  string
+	}
+
+	fixtures := []fixture{
+		{
+			name: "legacy_openvpn_server_tls",
+			xml: "<opnsense><openvpn><openvpn-server><tls>" +
+				staticKeyBody +
+				"</tls></openvpn-server></openvpn></opnsense>",
+		},
+		{
+			name: "legacy_openvpn_client_tls",
+			xml: "<opnsense><openvpn><openvpn-client><tls>" +
+				staticKeyBody +
+				"</tls></openvpn-client></openvpn></opnsense>",
+		},
+		{
+			name: "mvc_openvpn_statickeys",
+			xml: "<opnsense><OPNsense><OpenVPN><StaticKeys>" +
+				staticKeyBody +
+				"</StaticKeys></OpenVPN></OPNsense></opnsense>",
+		},
+		{
+			name: "tls_crypt_alias",
+			xml: "<opnsense><openvpn><openvpn-server><tls_crypt>" +
+				staticKeyBody +
+				"</tls_crypt></openvpn-server></openvpn></opnsense>",
+		},
+	}
+
+	for _, mode := range ValidModes() {
+		for _, fx := range fixtures {
+			t.Run(string(mode)+"_"+fx.name, func(t *testing.T) {
+				s := NewSanitizer(mode)
+				var output bytes.Buffer
+				if err := s.SanitizeXML(strings.NewReader(fx.xml), &output); err != nil {
+					t.Fatalf("SanitizeXML() error = %v", err)
+				}
+				result := output.String()
+				if strings.Contains(result, "BEGIN OpenVPN Static key") {
+					t.Errorf("mode=%q fixture=%q leaked OpenVPN envelope: %s", mode, fx.name, result)
+				}
+				if strings.Contains(result, "abc123def456") {
+					t.Errorf("mode=%q fixture=%q leaked key body: %s", mode, fx.name, result)
+				}
+				if !strings.Contains(result, "[REDACTED-PRIVATE-KEY]") {
+					t.Errorf("mode=%q fixture=%q missing redaction marker: %s", mode, fx.name, result)
+				}
+			})
+		}
+	}
+}
+
+// TestSanitizeXML_SNMPv3EncKey verifies the OPNsense net-snmp plugin's
+// SNMPv3 privacy/encryption key (<enckey>) is redacted. Before ADR-0001's fix
+// the bare "key" pattern was exact-match only, so <enckey> leaked in cleartext
+// through the raw-XML sanitize path.
+func TestSanitizeXML_SNMPv3EncKey(t *testing.T) {
+	const encKeyBody = "s3cr3t-privacy-key-value"
+
+	fixtures := []struct {
+		name string
+		xml  string
+	}{
+		{
+			name: "netsnmp_enckey",
+			xml: "<opnsense><OPNsense><netsnmp><user><users><user><enckey>" +
+				encKeyBody +
+				"</enckey></user></users></user></netsnmp></OPNsense></opnsense>",
+		},
+		{
+			name: "enc_key_alias",
+			xml: "<opnsense><OPNsense><netsnmp><user><users><user><enc_key>" +
+				encKeyBody +
+				"</enc_key></user></users></user></netsnmp></OPNsense></opnsense>",
+		},
+	}
+
+	for _, mode := range ValidModes() {
+		for _, fx := range fixtures {
+			t.Run(string(mode)+"_"+fx.name, func(t *testing.T) {
+				s := NewSanitizer(mode)
+				var output bytes.Buffer
+				if err := s.SanitizeXML(strings.NewReader(fx.xml), &output); err != nil {
+					t.Fatalf("SanitizeXML() error = %v", err)
+				}
+				result := output.String()
+				if strings.Contains(result, encKeyBody) {
+					t.Errorf("mode=%q fixture=%q leaked SNMPv3 enckey: %s", mode, fx.name, result)
+				}
+				if !strings.Contains(result, "[REDACTED-PRIVATE-KEY]") {
+					t.Errorf("mode=%q fixture=%q missing redaction marker: %s", mode, fx.name, result)
+				}
+			})
+		}
+	}
+}
+
+// TestSanitizeXML_NetBirdSetupKey_RedactsSecret verifies the OPNsense
+// os-netbird plugin's enrollment key (<setupKey>) is redacted. The bare "key"
+// FieldPattern is exact-match only (see exactMatchPatterns), so camelCase/
+// compound forms of setupKey leaked in cleartext — including when NetBird is
+// disabled or the plugin has been removed but its <OPNsense><netbird> XML
+// remains in config.
+func TestSanitizeXML_NetBirdSetupKey_RedactsSecret(t *testing.T) {
+	const setupKeyBody = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890"
+
+	fixtures := []struct {
+		name string
+		xml  string
+	}{
+		{
+			name: "netbird_setupKey",
+			xml: "<opnsense><OPNsense><netbird><authentication><setupKey>" +
+				setupKeyBody +
+				"</setupKey><managementUrl>https://api.netbird.io</managementUrl>" +
+				"</authentication></netbird></OPNsense></opnsense>",
+		},
+		{
+			name: "setup_key_alias",
+			xml: "<opnsense><OPNsense><netbird><authentication><setup_key>" +
+				setupKeyBody +
+				"</setup_key></authentication></netbird></OPNsense></opnsense>",
+		},
+		{
+			name: "setup-key_alias",
+			xml: "<opnsense><OPNsense><netbird><authentication><setup-key>" +
+				setupKeyBody +
+				"</setup-key></authentication></netbird></OPNsense></opnsense>",
+		},
+		{
+			// Orphaned plugin config (service disabled / package removed) still
+			// carries the enrollment key under the OPNsense MVC namespace.
+			name: "orphaned_disabled_netbird",
+			xml: "<opnsense><OPNsense><netbird><settings><general><enabled>0</enabled>" +
+				"</general></settings><authentication><setupKey>" +
+				setupKeyBody +
+				"</setupKey></authentication></netbird></OPNsense></opnsense>",
+		},
+	}
+
+	for _, mode := range ValidModes() {
+		for _, fx := range fixtures {
+			t.Run(string(mode)+"_"+fx.name, func(t *testing.T) {
+				s := NewSanitizer(mode)
+				var output bytes.Buffer
+				if err := s.SanitizeXML(strings.NewReader(fx.xml), &output); err != nil {
+					t.Fatalf("SanitizeXML() error = %v", err)
+				}
+				result := output.String()
+				if strings.Contains(result, setupKeyBody) {
+					t.Errorf("mode=%q fixture=%q leaked NetBird setupKey: %s", mode, fx.name, result)
+				}
+				if !strings.Contains(result, redactedSecretValue) {
+					t.Errorf("mode=%q fixture=%q missing redaction marker: %s", mode, fx.name, result)
+				}
+				// Type safety (AGENTS): neighboring non-string fields must stay
+				// typed literals — sanitization must not replace 0/1/enums with
+				// string placeholders.
+				if strings.Contains(fx.xml, "<enabled>0</enabled>") &&
+					!strings.Contains(result, "<enabled>0</enabled>") {
+					t.Errorf("mode=%q fixture=%q corrupted enabled flag: %s", mode, fx.name, result)
+				}
+				// Structural validity: element remains present with string body.
+				if !strings.Contains(result, "<setupKey>"+redactedSecretValue+"</setupKey>") &&
+					!strings.Contains(result, "<setup_key>"+redactedSecretValue+"</setup_key>") &&
+					!strings.Contains(result, "<setup-key>"+redactedSecretValue+"</setup-key>") {
+					t.Errorf("mode=%q fixture=%q missing redacted setupKey element: %s", mode, fx.name, result)
+				}
+				// Management URL is not a credential. Aggressive mode may still
+				// rewrite hostnames via the value detector; only assert survival
+				// in modes that leave hostnames intact.
+				if mode != ModeAggressive &&
+					strings.Contains(fx.xml, "api.netbird.io") &&
+					!strings.Contains(result, "https://api.netbird.io") {
+					t.Errorf("mode=%q fixture=%q unexpectedly redacted managementUrl: %s", mode, fx.name, result)
+				}
+			})
+		}
+	}
+}
+
+// TestSanitizeXML_NetBirdSetupKey_NoFalsePositives ensures benign fields that
+// merely contain "setup" or the exact-match bare "key" compound forms (but not
+// the setupkey aliases) survive sanitization. Modeled on
+// TestSanitizeXML_OpenVPN_TLS_NoFalsePositives.
+func TestSanitizeXML_NetBirdSetupKey_NoFalsePositives(t *testing.T) {
+	fixtures := []struct {
+		name string
+		xml  string
+		want string
+	}{
+		{
+			name: "setupMode",
+			xml: "<opnsense><OPNsense><netbird><authentication><setupMode>" +
+				"manual</setupMode></authentication></netbird></OPNsense></opnsense>",
+			want: "manual",
+		},
+		{
+			name: "monkeybar_unaffected",
+			xml:  `<opnsense><misc><monkeybar>leave-me</monkeybar></misc></opnsense>`,
+			want: "leave-me",
+		},
+	}
+
+	for _, mode := range ValidModes() {
+		for _, fx := range fixtures {
+			t.Run(string(mode)+"_"+fx.name, func(t *testing.T) {
+				s := NewSanitizer(mode)
+				var output bytes.Buffer
+				if err := s.SanitizeXML(strings.NewReader(fx.xml), &output); err != nil {
+					t.Fatalf("SanitizeXML() error = %v", err)
+				}
+				if !strings.Contains(output.String(), fx.want) {
+					t.Errorf("mode=%q fixture=%q over-redacted: want %q present, got: %s",
+						mode, fx.name, fx.want, output.String())
+				}
+			})
+		}
+	}
+}
+
+// TestSanitizeXML_SNMPv3Password verifies the net-snmp plugin's SNMPv3 auth
+// passphrase (<password>) is redacted via the generic password rule — guards
+// against an accidental rule reshuffle when the enckey alias was added.
+func TestSanitizeXML_SNMPv3Password(t *testing.T) {
+	const passwordBody = "s3cr3t-auth-passphrase"
+
+	input := "<opnsense><OPNsense><netsnmp><user><users><user><password>" +
+		passwordBody +
+		"</password></user></users></user></netsnmp></OPNsense></opnsense>"
+
+	for _, mode := range ValidModes() {
+		t.Run(string(mode), func(t *testing.T) {
+			s := NewSanitizer(mode)
+			var output bytes.Buffer
+			if err := s.SanitizeXML(strings.NewReader(input), &output); err != nil {
+				t.Fatalf("SanitizeXML() error = %v", err)
+			}
+			result := output.String()
+			if strings.Contains(result, passwordBody) {
+				t.Errorf("mode=%q leaked SNMPv3 auth password: %s", mode, result)
+			}
+			// Assert the marker is present, not just that the cleartext is
+			// absent — catches the node being dropped/rewritten instead of
+			// redacted.
+			if !strings.Contains(result, "[REDACTED-PASSWORD]") {
+				t.Errorf("mode=%q missing password redaction marker: %s", mode, result)
+			}
+		})
+	}
+}
+
+// TestSanitizeXML_OpenVPN_TLS_NoFalsePositives guards against over-broad
+// redaction of the `tls` substring. The <tls> wrapper on Suricata eveLog
+// and the <tls> log-level enum under the IPsec strongSwan daemon syslog
+// (both in pkg/schema/opnsense/security.go) must survive sanitization —
+// they carry no secrets and redacting them would break downstream parsing.
+func TestSanitizeXML_OpenVPN_TLS_NoFalsePositives(t *testing.T) {
+	// Suricata eveLog.tls wraps boolean-ish enable/extended children.
+	suricataXML := `<opnsense><OPNsense><IDS><general><eveLog><tls>` +
+		`<enable>1</enable><extended>1</extended><sessionResumption>1</sessionResumption>` +
+		`</tls></eveLog></general></IDS></OPNsense></opnsense>`
+
+	// IPsec charon syslog daemon.tls carries a log-level string (0-5).
+	ipsecXML := `<opnsense><OPNsense><IPsec><charon><syslog><daemon>` +
+		`<tls>1</tls></daemon></syslog></charon></IPsec></OPNsense></opnsense>`
+
+	cases := []struct {
+		name string
+		in   string
+		want []string // substrings that must survive
+	}{
+		{"suricata_evelog_tls_children", suricataXML, []string{"<enable>1</enable>", "<extended>1</extended>"}},
+		{"ipsec_syslog_daemon_tls", ipsecXML, []string{"<tls>1</tls>"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewSanitizer(ModeAggressive)
+			var output bytes.Buffer
+			if err := s.SanitizeXML(strings.NewReader(tc.in), &output); err != nil {
+				t.Fatalf("SanitizeXML() error = %v", err)
+			}
+			result := output.String()
+			if strings.Contains(result, "[REDACTED-PRIVATE-KEY]") {
+				t.Errorf("non-OpenVPN <tls> element was over-redacted as private key: %s", result)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(result, want) {
+					t.Errorf("expected %q to survive sanitization, got: %s", want, result)
+				}
+			}
+		})
 	}
 }
 
@@ -559,6 +874,227 @@ func TestSanitizeXML_StripsDTDDirective(t *testing.T) {
 	}
 }
 
+// mustReparse fails the test when s is not a well-formed XML document.
+// The sanitizer's contract is that a config.xml in produces a config.xml out,
+// so any output that no longer parses is a defect regardless of redaction
+// correctness.
+func mustReparse(t *testing.T, s string) {
+	t.Helper()
+
+	decoder := xml.NewDecoder(strings.NewReader(s))
+	for {
+		_, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("sanitized output is not well-formed XML: %v (output: %s)", err, s)
+		}
+	}
+}
+
+func TestSanitizeXML_CommentEndingInDashStaysWellFormed(t *testing.T) {
+	t.Parallel()
+
+	// XML 1.0 forbids a comment body from ending in "-": emitting it verbatim
+	// produces "--->", which no parser accepts. A trailing dash is ordinary in
+	// operator-written config comments ("<!-- migrated 2024- -->").
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"trailing dash", `<?xml version="1.0"?><opnsense><!-- migrated 2024- --><a>x</a></opnsense>`},
+		{"only a dash", `<?xml version="1.0"?><opnsense><!-- - --><a>x</a></opnsense>`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := NewSanitizer(ModeAggressive)
+			var output bytes.Buffer
+			if err := s.SanitizeXML(strings.NewReader(tt.input), &output); err != nil {
+				t.Fatalf("SanitizeXML() error = %v", err)
+			}
+
+			result := output.String()
+			mustReparse(t, result)
+
+			if strings.Contains(result, "--->") {
+				t.Errorf("output contains the malformed sequence %q: %s", "--->", result)
+			}
+		})
+	}
+}
+
+func TestSanitizeXML_CommentPreservesLineStructure(t *testing.T) {
+	t.Parallel()
+
+	// A multi-line comment must stay multi-line: flattening it onto a single
+	// line loses information the operator wrote into the config.
+	input := "<?xml version=\"1.0\"?><opnsense><!-- line one\nline two\nline three --><a>x</a></opnsense>"
+
+	s := NewSanitizer(ModeAggressive)
+	var output bytes.Buffer
+	if err := s.SanitizeXML(strings.NewReader(input), &output); err != nil {
+		t.Fatalf("SanitizeXML() error = %v", err)
+	}
+
+	result := output.String()
+	mustReparse(t, result)
+
+	if got := strings.Count(result, "\n"); got < 2 {
+		t.Errorf("comment line structure was collapsed: got %d newlines in %q", got, result)
+	}
+	for _, want := range []string{"line one", "line two", "line three"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("output lost comment text %q: %s", want, result)
+		}
+	}
+}
+
+func TestSanitizeXML_CommentRedactionStillApplies(t *testing.T) {
+	t.Parallel()
+
+	// The whitespace-preserving rewrite must not weaken redaction: a secret
+	// inside a comment is still replaced.
+	input := "<?xml version=\"1.0\"?><opnsense><!-- reachable at 8.8.8.8\n and admin@example.com --><a>x</a></opnsense>"
+
+	s := NewSanitizer(ModeAggressive)
+	var output bytes.Buffer
+	if err := s.SanitizeXML(strings.NewReader(input), &output); err != nil {
+		t.Fatalf("SanitizeXML() error = %v", err)
+	}
+
+	result := output.String()
+	mustReparse(t, result)
+
+	if strings.Contains(result, testPublicIP) {
+		t.Errorf("public IP not redacted inside comment: %s", result)
+	}
+	if strings.Contains(result, "admin@example.com") {
+		t.Errorf("email not redacted inside comment: %s", result)
+	}
+}
+
+func TestEscapeXMLComment(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"plain", "hello world", "hello world"},
+		{"trailing dash", "rev-3-", "rev-3- "},
+		{"double dash", "a--b", "a- b"},
+		{"triple dash", "a---b", "a- -b"},
+		{"quadruple dash", "a----b", "a- - b"},
+		{"trailing double dash", "a--", "a- "},
+		{"only dashes", "---", "- - "},
+		{"newlines preserved", "a\nb", "a\nb"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := escapeXMLComment(tt.input)
+			if got != tt.want {
+				t.Errorf("escapeXMLComment(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+			if strings.Contains(got, "--") {
+				t.Errorf("escapeXMLComment(%q) = %q still contains a double dash", tt.input, got)
+			}
+			if strings.HasSuffix(got, "-") {
+				t.Errorf("escapeXMLComment(%q) = %q still ends in a dash", tt.input, got)
+			}
+		})
+	}
+}
+
+func TestReplaceXMLIllegalChars(t *testing.T) {
+	t.Parallel()
+
+	// Boundaries below were checked against libxml2: it accepts a raw 0x7F in a
+	// comment and rejects U+FFFE with "Char 0xFFFE out of allowed range".
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"plain", "hello world", "hello world"},
+		{"tab lf cr stay", "a\tb\nc\rd", "a\tb\nc\rd"},
+		{"nul", "a\x00b", "a�b"},
+		{"start of heading", "a\x01b", "a�b"},
+		{"vertical tab", "a\x0bb", "a�b"},
+		{"form feed", "a\x0cb", "a�b"},
+		{"unit separator", "a\x1fb", "a�b"},
+		{"del is legal in xml 1.0", "a\x7fb", "a\x7fb"},
+		{"noncharacter fffe", "a￾b", "a�b"},
+		{"replacement char is legal", "a�b", "a�b"},
+		{"multibyte preserved", "a→b", "a→b"},
+		{"astral plane preserved", "a\U0001F600b", "a\U0001F600b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := replaceXMLIllegalChars(tt.input)
+			if got != tt.want {
+				t.Errorf("replaceXMLIllegalChars(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+			for _, r := range got {
+				if isXMLIllegalRune(r) {
+					t.Errorf("replaceXMLIllegalChars(%q) = %q still contains illegal rune %U", tt.input, got, r)
+				}
+			}
+		})
+	}
+}
+
+// TestSanitizeXML_IllegalCharsInCommentAndProcInst pins the emission sites that
+// bypass xml.EscapeText. encoding/xml rejects an illegal character inside
+// CharData or an attribute at parse time, but hands Comment and ProcInst content
+// back verbatim, so neither the production decoder nor mustReparse can catch a
+// regression here — the assertion has to scan the bytes directly.
+func TestSanitizeXML_IllegalCharsInCommentAndProcInst(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"comment", "<opnsense><!-- migrated\x01note --><a>x</a></opnsense>"},
+		{"procinst", "<opnsense><?target inst\x01ruction?><a>x</a></opnsense>"},
+		{"comment noncharacter", "<opnsense><!-- a￾b --><a>x</a></opnsense>"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := NewSanitizer(ModeAggressive)
+			var output bytes.Buffer
+			if err := s.SanitizeXML(strings.NewReader(tt.input), &output); err != nil {
+				t.Fatalf("SanitizeXML() error = %v", err)
+			}
+
+			result := output.String()
+			mustReparse(t, result)
+
+			for i, r := range result {
+				if isXMLIllegalRune(r) {
+					t.Errorf("output byte %d is illegal rune %U, not valid XML: %q", i, r, result)
+				}
+			}
+		})
+	}
+}
+
 func TestEscapeXMLAttr(t *testing.T) {
 	tests := []struct {
 		input string
@@ -628,6 +1164,71 @@ func BenchmarkSanitizeXML(b *testing.B) {
 	sb.WriteString("  </filter>\n")
 	sb.WriteString("</opnsense>\n")
 
+	input := sb.String()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for b.Loop() {
+		s := NewSanitizer(ModeAggressive)
+		var output bytes.Buffer
+		if err := s.SanitizeXML(strings.NewReader(input), &output); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkSanitizeXML_MixedEmpty simulates a more realistic OPNsense config
+// where many elements are empty/self-closing containers (common in real
+// exports) interleaved with populated leaf elements. This exercises the
+// deferred path-materialization optimization from issue #148 — empty
+// CharData tokens should not trigger a strings.Join call.
+func BenchmarkSanitizeXML_MixedEmpty(b *testing.B) {
+	var sb strings.Builder
+	sb.WriteString(`<?xml version="1.0"?>` + "\n")
+	sb.WriteString("<opnsense>\n")
+
+	// Emit a realistic mix: ~5k populated leaves alongside ~10k empty
+	// containers and self-closing elements (matches config.xml shape).
+	sb.WriteString("  <system>\n")
+	for i := range 200 {
+		n := strconv.Itoa(i)
+		sb.WriteString("    <user>\n")
+		sb.WriteString("      <name>user" + n + "</name>\n")
+		sb.WriteString("      <password>secret" + n + "</password>\n")
+		sb.WriteString("      <descr></descr>\n") // empty element (no join needed)
+		sb.WriteString("      <disabled/>\n")     // self-closing (no CharData match)
+		sb.WriteString("      <scope>user</scope>\n")
+		sb.WriteString("      <expires></expires>\n") // empty
+		sb.WriteString("      <authorizedkeys></authorizedkeys>\n")
+		sb.WriteString("      <ipsecpsk></ipsecpsk>\n")
+		sb.WriteString("    </user>\n")
+	}
+	sb.WriteString("  </system>\n")
+
+	sb.WriteString("  <filter>\n")
+	for i := range 500 {
+		n := strconv.Itoa(i)
+		octet := strconv.Itoa(i % 256) // keep third octet in valid 0-255 range
+		sb.WriteString("    <rule>\n")
+		sb.WriteString("      <type>pass</type>\n")
+		sb.WriteString("      <descr>Rule " + n + "</descr>\n")
+		sb.WriteString("      <source>\n")
+		sb.WriteString("        <network></network>\n") // empty container
+		sb.WriteString("        <address>10.0." + octet + ".0/24</address>\n")
+		sb.WriteString("      </source>\n")
+		sb.WriteString("      <destination>\n")
+		sb.WriteString("        <any/>\n")
+		sb.WriteString("      </destination>\n")
+		sb.WriteString("      <protocol>tcp</protocol>\n")
+		sb.WriteString("      <log/>\n")      // self-closing
+		sb.WriteString("      <disabled/>\n") // self-closing
+		sb.WriteString("      <interface>lan</interface>\n")
+		sb.WriteString("    </rule>\n")
+	}
+	sb.WriteString("  </filter>\n")
+
+	sb.WriteString("</opnsense>\n")
 	input := sb.String()
 
 	b.ResetTimer()

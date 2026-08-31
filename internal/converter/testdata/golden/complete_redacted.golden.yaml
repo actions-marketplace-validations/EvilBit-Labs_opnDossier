@@ -206,14 +206,17 @@ dhcp:
         from: 192.168.100.50
         to: 192.168.100.199
       gateway: 192.168.100.1
-      dnsServer: 192.168.100.1
+      dnsServers:
+        - 192.168.100.1
+        - 9.9.9.9
     - interface: guest
       enabled: true
       range:
         from: 172.16.1.50
         to: 172.16.1.199
       gateway: 172.16.1.1
-      dnsServer: 1.1.1.1
+      dnsServers:
+        - 1.1.1.1
 dns:
     unbound:
         enabled: true
@@ -410,6 +413,7 @@ statistics:
 analysis:
     deadRules:
         - kind: unreachable
+          ruleIndex: 0
           interface: wan
           description: Rules after position 1 on interface wan are unreachable due to preceding block-all rule
           recommendation: Remove unreachable rules or reorder them before the block-all rule

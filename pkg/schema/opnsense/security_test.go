@@ -1121,29 +1121,10 @@ func TestRule_FloatingRules_XMLRoundTrip(t *testing.T) {
 			if err := xml.Unmarshal([]byte(tt.xml), &got); err != nil {
 				t.Fatalf("xml.Unmarshal() error = %v", err)
 			}
-			if got.Floating != tt.wantFloating {
-				t.Errorf("Floating = %q, want %q", got.Floating, tt.wantFloating)
-			}
-			if got.Direction != tt.wantDir {
-				t.Errorf("Direction = %q, want %q", got.Direction, tt.wantDir)
-			}
-			if got.Gateway != tt.wantGateway {
-				t.Errorf("Gateway = %q, want %q", got.Gateway, tt.wantGateway)
-			}
-			if got.Quick != tt.wantQuick {
-				t.Errorf("Quick = %v, want %v", got.Quick, tt.wantQuick)
-			}
-			if got.Log != tt.wantLog {
-				t.Errorf("Log = %v, want %v", got.Log, tt.wantLog)
-			}
-			if got.Tracker != tt.wantTracker {
-				t.Errorf("Tracker = %q, want %q", got.Tracker, tt.wantTracker)
-			}
-			if got.StateType != tt.wantState {
-				t.Errorf("StateType = %q, want %q", got.StateType, tt.wantState)
-			}
+			assertFloatingRuleFields(t, "parse", got,
+				tt.wantFloating, tt.wantDir, tt.wantGateway, tt.wantTracker, tt.wantState,
+				tt.wantQuick, tt.wantLog)
 
-			// Round-trip validation
 			marshaled, err := xml.Marshal(got)
 			if err != nil {
 				t.Fatalf("xml.Marshal() error = %v", err)
@@ -1152,28 +1133,45 @@ func TestRule_FloatingRules_XMLRoundTrip(t *testing.T) {
 			if err := xml.Unmarshal(marshaled, &roundTripped); err != nil {
 				t.Fatalf("round-trip xml.Unmarshal() error = %v", err)
 			}
-			if roundTripped.Floating != tt.wantFloating {
-				t.Errorf("round-trip Floating = %q, want %q", roundTripped.Floating, tt.wantFloating)
-			}
-			if roundTripped.Direction != tt.wantDir {
-				t.Errorf("round-trip Direction = %q, want %q", roundTripped.Direction, tt.wantDir)
-			}
-			if roundTripped.Gateway != tt.wantGateway {
-				t.Errorf("round-trip Gateway = %q, want %q", roundTripped.Gateway, tt.wantGateway)
-			}
-			if roundTripped.Quick != tt.wantQuick {
-				t.Errorf("round-trip Quick = %v, want %v", roundTripped.Quick, tt.wantQuick)
-			}
-			if roundTripped.Log != tt.wantLog {
-				t.Errorf("round-trip Log = %v, want %v", roundTripped.Log, tt.wantLog)
-			}
-			if roundTripped.Tracker != tt.wantTracker {
-				t.Errorf("round-trip Tracker = %q, want %q", roundTripped.Tracker, tt.wantTracker)
-			}
-			if roundTripped.StateType != tt.wantState {
-				t.Errorf("round-trip StateType = %q, want %q", roundTripped.StateType, tt.wantState)
-			}
+			assertFloatingRuleFields(t, "round-trip", roundTripped,
+				tt.wantFloating, tt.wantDir, tt.wantGateway, tt.wantTracker, tt.wantState,
+				tt.wantQuick, tt.wantLog)
 		})
+	}
+}
+
+// assertFloatingRuleFields is the per-case field-equality check used by
+// TestRule_FloatingRules_XMLRoundTrip. Extracting the assertions keeps the
+// subtest body's cognitive complexity below gocognit's threshold and makes
+// the parse vs round-trip cases share the same expected-field contract.
+func assertFloatingRuleFields(
+	t *testing.T,
+	label string,
+	got Rule,
+	wantFloating, wantDir, wantGateway, wantTracker, wantState string,
+	wantQuick, wantLog BoolFlag,
+) {
+	t.Helper()
+	if got.Floating != wantFloating {
+		t.Errorf("%s Floating = %q, want %q", label, got.Floating, wantFloating)
+	}
+	if got.Direction != wantDir {
+		t.Errorf("%s Direction = %q, want %q", label, got.Direction, wantDir)
+	}
+	if got.Gateway != wantGateway {
+		t.Errorf("%s Gateway = %q, want %q", label, got.Gateway, wantGateway)
+	}
+	if got.Quick != wantQuick {
+		t.Errorf("%s Quick = %v, want %v", label, got.Quick, wantQuick)
+	}
+	if got.Log != wantLog {
+		t.Errorf("%s Log = %v, want %v", label, got.Log, wantLog)
+	}
+	if got.Tracker != wantTracker {
+		t.Errorf("%s Tracker = %q, want %q", label, got.Tracker, wantTracker)
+	}
+	if got.StateType != wantState {
+		t.Errorf("%s StateType = %q, want %q", label, got.StateType, wantState)
 	}
 }
 
@@ -1606,83 +1604,61 @@ func TestRule_BackwardCompatibility_MissingFields(t *testing.T) {
 			if err := xml.Unmarshal([]byte(tt.xml), &got); err != nil {
 				t.Fatalf("xml.Unmarshal() error = %v", err)
 			}
-
-			// All new string fields default to empty
-			if got.Floating != "" {
-				t.Errorf("Floating = %q, want empty", got.Floating)
-			}
-			if got.Gateway != "" {
-				t.Errorf("Gateway = %q, want empty", got.Gateway)
-			}
-			if got.Direction != "" {
-				t.Errorf("Direction = %q, want empty", got.Direction)
-			}
-			if got.StateType != "" {
-				t.Errorf("StateType = %q, want empty", got.StateType)
-			}
-			if got.Tracker != "" {
-				t.Errorf("Tracker = %q, want empty", got.Tracker)
-			}
-
-			// All BoolFlag fields default to false
-			if got.Log {
-				t.Errorf("Log = %v, want false", got.Log)
-			}
-			if got.Disabled {
-				t.Errorf("Disabled = %v, want false", got.Disabled)
-			}
-			if got.Quick {
-				t.Errorf("Quick = %v, want false", got.Quick)
-			}
-
-			// New rate-limiting fields default to empty
-			if got.MaxSrcNodes != "" {
-				t.Errorf("MaxSrcNodes = %q, want empty", got.MaxSrcNodes)
-			}
-			if got.MaxSrcConn != "" {
-				t.Errorf("MaxSrcConn = %q, want empty", got.MaxSrcConn)
-			}
-			if got.MaxSrcConnRate != "" {
-				t.Errorf("MaxSrcConnRate = %q, want empty", got.MaxSrcConnRate)
-			}
-			if got.MaxSrcConnRates != "" {
-				t.Errorf("MaxSrcConnRates = %q, want empty", got.MaxSrcConnRates)
-			}
-
-			// New TCP/ICMP fields default to zero values
-			if got.TCPFlags1 != "" {
-				t.Errorf("TCPFlags1 = %q, want empty", got.TCPFlags1)
-			}
-			if got.TCPFlags2 != "" {
-				t.Errorf("TCPFlags2 = %q, want empty", got.TCPFlags2)
-			}
-			if got.TCPFlagsAny {
-				t.Errorf("TCPFlagsAny = %v, want false", got.TCPFlagsAny)
-			}
-			if got.ICMPType != "" {
-				t.Errorf("ICMPType = %q, want empty", got.ICMPType)
-			}
-			if got.ICMP6Type != "" {
-				t.Errorf("ICMP6Type = %q, want empty", got.ICMP6Type)
-			}
-
-			// New state and advanced fields default to zero values
-			if got.StateTimeout != "" {
-				t.Errorf("StateTimeout = %q, want empty", got.StateTimeout)
-			}
-			if got.AllowOpts {
-				t.Errorf("AllowOpts = %v, want false", got.AllowOpts)
-			}
-			if got.DisableReplyTo {
-				t.Errorf("DisableReplyTo = %v, want false", got.DisableReplyTo)
-			}
-			if got.NoPfSync {
-				t.Errorf("NoPfSync = %v, want false", got.NoPfSync)
-			}
-			if got.NoSync {
-				t.Errorf("NoSync = %v, want false", got.NoSync)
-			}
+			assertRuleFieldsEmpty(t, got)
 		})
+	}
+}
+
+// assertRuleFieldsEmpty checks that every optional Rule field is at its
+// zero-value. Extracted from TestRule_BackwardCompatibility_MissingFields
+// so the subtest body is a single call and gocognit stays under threshold.
+// When a new optional Rule field is added, extend this helper (and the test's
+// coverage grows automatically).
+func assertRuleFieldsEmpty(t *testing.T, got Rule) {
+	t.Helper()
+
+	stringFields := []struct {
+		name string
+		got  string
+	}{
+		{"Floating", got.Floating},
+		{"Gateway", got.Gateway},
+		{"Direction", got.Direction},
+		{"StateType", got.StateType},
+		{"Tracker", got.Tracker},
+		{"MaxSrcNodes", got.MaxSrcNodes},
+		{"MaxSrcConn", got.MaxSrcConn},
+		{"MaxSrcConnRate", got.MaxSrcConnRate},
+		{"MaxSrcConnRates", got.MaxSrcConnRates},
+		{"TCPFlags1", got.TCPFlags1},
+		{"TCPFlags2", got.TCPFlags2},
+		{"ICMPType", got.ICMPType},
+		{"ICMP6Type", got.ICMP6Type},
+		{"StateTimeout", got.StateTimeout},
+	}
+	for _, f := range stringFields {
+		if f.got != "" {
+			t.Errorf("%s = %q, want empty", f.name, f.got)
+		}
+	}
+
+	boolFlagFields := []struct {
+		name string
+		got  bool
+	}{
+		{"Log", bool(got.Log)},
+		{"Disabled", bool(got.Disabled)},
+		{"Quick", bool(got.Quick)},
+		{"TCPFlagsAny", bool(got.TCPFlagsAny)},
+		{"AllowOpts", bool(got.AllowOpts)},
+		{"DisableReplyTo", bool(got.DisableReplyTo)},
+		{"NoPfSync", bool(got.NoPfSync)},
+		{"NoSync", bool(got.NoSync)},
+	}
+	for _, f := range boolFlagFields {
+		if f.got {
+			t.Errorf("%s = %v, want false", f.name, f.got)
+		}
 	}
 }
 
@@ -1744,6 +1720,8 @@ func TestRule_BackwardCompatibility_EffectiveAddress(t *testing.T) {
 }
 
 // verifyCompleteRuleFields checks all fields of a Rule against expected values.
+//
+//nolint:funlen,cyclop // one branch per Rule field; the complexity tracks the schema's field count
 func verifyCompleteRuleFields(t *testing.T, got Rule, prefix string) {
 	t.Helper()
 
@@ -2087,6 +2065,7 @@ func TestNATRule_NewFields_XMLRoundTrip(t *testing.T) {
 	}
 }
 
+//nolint:funlen,cyclop // per-field field-equality assertions; branch count tracks schema field count
 func TestNATRule_CompleteWithNewFields_XMLRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -2264,7 +2243,7 @@ func TestNATRule_BackwardCompatibility(t *testing.T) {
 	}
 }
 
-//nolint:dupl // InboundRule/Rule round-trip test loops are structurally similar by design
+//nolint:dupl,funlen // InboundRule/Rule round-trip test loops are structurally similar; length is in data
 func TestInboundRule_NewFields_XMLRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -2393,6 +2372,7 @@ func TestInboundRule_NewFields_XMLRoundTrip(t *testing.T) {
 	}
 }
 
+//nolint:funlen,cyclop // per-field field-equality assertions; branch count tracks schema field count
 func TestInboundRule_CompleteWithNewFields_XMLRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -2581,5 +2561,171 @@ func TestInboundRule_BackwardCompatibility(t *testing.T) {
 				t.Errorf("LocalPort = %q, want empty", got.LocalPort)
 			}
 		})
+	}
+}
+
+func TestAlias_XMLRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		xml          string
+		want         Alias
+		wantElements []string
+	}{
+		{
+			name: "host alias with newline-separated content",
+			xml: `<alias uuid="11111111-1111-1111-1111-111111111111">` +
+				`<name>WEB_SERVERS</name><type>host</type>` +
+				"<content>10.20.30.40\n10.20.30.41</content>" +
+				`<descr>Web server hosts</descr></alias>`,
+			want: Alias{
+				UUID:        "11111111-1111-1111-1111-111111111111",
+				Name:        "WEB_SERVERS",
+				Type:        "host",
+				Content:     "10.20.30.40\n10.20.30.41",
+				Description: "Web server hosts",
+			},
+			wantElements: []string{
+				`uuid="11111111-1111-1111-1111-111111111111"`,
+				"<name>WEB_SERVERS</name>",
+				"<type>host</type>",
+				"<descr>Web server hosts</descr>",
+			},
+		},
+		{
+			name: "network alias with CIDR content",
+			xml: `<alias><name>INTERNAL_NET</name><type>network</type>` +
+				`<content>10.20.0.0/16</content><descr>Internal network</descr></alias>`,
+			want: Alias{
+				Name:        "INTERNAL_NET",
+				Type:        "network",
+				Content:     "10.20.0.0/16",
+				Description: "Internal network",
+			},
+			wantElements: []string{
+				"<name>INTERNAL_NET</name>",
+				"<type>network</type>",
+				"<content>10.20.0.0/16</content>",
+			},
+		},
+		{
+			name: "legacy alias with address field instead of content",
+			xml: `<alias><name>LEGACY_HOSTS</name><type>host</type>` +
+				`<address>10.5.5.1 10.5.5.2</address></alias>`,
+			want: Alias{
+				Name:    "LEGACY_HOSTS",
+				Type:    "host",
+				Address: "10.5.5.1 10.5.5.2",
+			},
+			wantElements: []string{
+				"<name>LEGACY_HOSTS</name>",
+				"<address>10.5.5.1 10.5.5.2</address>",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var got Alias
+			if err := xml.Unmarshal([]byte(tt.xml), &got); err != nil {
+				t.Fatalf("xml.Unmarshal() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("xml.Unmarshal() = %+v, want %+v", got, tt.want)
+			}
+
+			marshaled, err := xml.Marshal(tt.want)
+			if err != nil {
+				t.Fatalf("xml.Marshal() error = %v", err)
+			}
+			marshaledStr := string(marshaled)
+
+			for _, elem := range tt.wantElements {
+				if !strings.Contains(marshaledStr, elem) {
+					t.Errorf("marshaled XML %q does not contain expected element %q", marshaledStr, elem)
+				}
+			}
+
+			var roundTripped Alias
+			if err := xml.Unmarshal(marshaled, &roundTripped); err != nil {
+				t.Fatalf("round-trip xml.Unmarshal() error = %v", err)
+			}
+			if roundTripped != tt.want {
+				t.Errorf("round-trip result = %+v, want %+v", roundTripped, tt.want)
+			}
+		})
+	}
+}
+
+func TestAliasList_XMLRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	input := `<aliases>` +
+		`<alias><name>WEB_SERVERS</name><type>host</type><content>10.20.30.40</content></alias>` +
+		`<alias><name>WEB_PORTS</name><type>port</type><content>80&#10;443</content></alias>` +
+		`</aliases>`
+
+	var got AliasList
+	if err := xml.Unmarshal([]byte(input), &got); err != nil {
+		t.Fatalf("xml.Unmarshal() error = %v", err)
+	}
+
+	if len(got.Alias) != 2 {
+		t.Fatalf("len(Alias) = %d, want 2", len(got.Alias))
+	}
+	if got.Alias[0].Name != "WEB_SERVERS" || got.Alias[0].Content != "10.20.30.40" {
+		t.Errorf("Alias[0] = %+v, want name=WEB_SERVERS content=10.20.30.40", got.Alias[0])
+	}
+	if got.Alias[1].Name != "WEB_PORTS" || got.Alias[1].Content != "80\n443" {
+		t.Errorf("Alias[1] = %+v, want name=WEB_PORTS content=80\\n443", got.Alias[1])
+	}
+
+	marshaled, err := xml.Marshal(got)
+	if err != nil {
+		t.Fatalf("xml.Marshal() error = %v", err)
+	}
+
+	var roundTripped AliasList
+	if err := xml.Unmarshal(marshaled, &roundTripped); err != nil {
+		t.Fatalf("round-trip xml.Unmarshal() error = %v", err)
+	}
+	if len(roundTripped.Alias) != 2 ||
+		roundTripped.Alias[0].Name != "WEB_SERVERS" ||
+		roundTripped.Alias[1].Content != "80\n443" {
+		t.Errorf("round-trip result = %+v, want equivalent to input", roundTripped)
+	}
+}
+
+// TestFirewallAlias_EmptyAliases_RoundTrip pins the pre-existing behavior
+// that an empty <aliases/> element (the shape every current fixture uses,
+// see GOTCHAS-worthy note in the U2 plan) still round-trips cleanly after
+// retyping Firewall.Alias.Aliases from a plain string to AliasList.
+func TestFirewallAlias_EmptyAliases_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	input := `<Firewall><Alias version="1.0.1"><geoip><url/></geoip><aliases/></Alias></Firewall>`
+
+	var got Firewall
+	if err := xml.Unmarshal([]byte(input), &got); err != nil {
+		t.Fatalf("xml.Unmarshal() error = %v", err)
+	}
+	if len(got.Alias.Aliases.Alias) != 0 {
+		t.Errorf("Alias.Aliases.Alias = %+v, want empty", got.Alias.Aliases.Alias)
+	}
+
+	marshaled, err := xml.Marshal(got)
+	if err != nil {
+		t.Fatalf("xml.Marshal() error = %v", err)
+	}
+
+	var roundTripped Firewall
+	if err := xml.Unmarshal(marshaled, &roundTripped); err != nil {
+		t.Fatalf("round-trip xml.Unmarshal() error = %v", err)
+	}
+	if len(roundTripped.Alias.Aliases.Alias) != 0 {
+		t.Errorf("round-trip Alias.Aliases.Alias = %+v, want empty", roundTripped.Alias.Aliases.Alias)
 	}
 }

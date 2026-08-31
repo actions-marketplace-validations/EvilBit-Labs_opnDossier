@@ -17,44 +17,65 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
         with:
           install: true
           cache: true
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9 # The version should be handled by mise, but we specify it here to ensure consistency
+      # Keep `version` in lockstep with the golangci-lint pin in mise.toml.
+      # These are two independent pins: mise drives `just lint` locally, this
+      # one drives CI. When they drift, CI and developers run different
+      # linters against the same tree and CI silently becomes the weaker gate.
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: v2.11.3
+          version: v2.13.2
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Test - Run tests across platforms
+  # Test - Run tests across platforms and Go versions
+  #
+  # Support policy: opnDossier supports the current and previous stable Go
+  # releases (N and N-1), matching Go's upstream release policy. The matrix
+  # below exercises both `stable` and `oldstable`; mise still drives lint,
+  # format, and the rest of the toolchain — `actions/setup-go` is layered on
+  # top of mise here purely to override the Go toolchain for this job.
   # ─────────────────────────────────────────────────────────────────────────
   test:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.os }}, ${{ matrix.go-version }})
     runs-on: ${{ matrix.os }}
     needs: lint
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        # go.mod declares go 1.26 and the codebase uses 1.26-only features
+        # (reflect.Value.Fields iter.Seq2, for-range over int, etc.), so
+        # `oldstable` (Go 1.25) cannot compile it. The matrix sticks to
+        # `stable` until the module minimum drops back to N-1.
+        go-version: [stable]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
         with:
           install: true
           cache: true
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run tests (Unix)
-        if: runner.os != 'Windows'
-        run: just test
+      - name: Setup Go (${{ matrix.go-version }})
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
 
-      - name: Run tests (Windows) # I don't remember why this is necessary, but I believe it was due to the speed of tests on the Windows runners
-        if: runner.os == 'Windows'
-        run: just ci-smoke
+      # Windows previously ran `just ci-smoke` (./cmd/... and ./internal/config/...
+      # only) on the belief that the full suite was too slow there. It was not
+      # slow, it failed: nao1215/markdown emitted CRLF against LF golden fixtures,
+      # and several tests hardcoded POSIX paths. Both are fixed, and the full
+      # suite measures 24s on Windows against 18s for ci-smoke.
+      - name: Run tests
+        run: just test
 
   # ─────────────────────────────────────────────────────────────────────────
   # Integration Tests - E2E testing with real config files
@@ -64,8 +85,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           install: true
           cache: true
@@ -82,8 +103,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           install: true
           cache: true
@@ -93,11 +114,15 @@ jobs:
         run: just test-coverage
 
       - name: Upload to Codecov
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v5
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.txt
-          fail_ci_if_error: true
+          # Dependabot PRs run without access to CODECOV_TOKEN, so the tokenless
+          # upload to a protected branch is rejected. Only enforce upload success
+          # where the token is available; tests themselves still run above and
+          # gate the job regardless of actor.
+          fail_ci_if_error: ${{ github.actor != 'dependabot[bot]' }}
 
   # ─────────────────────────────────────────────────────────────────────────
   # Build - Verify builds across platforms
@@ -107,9 +132,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           install: true
           cache: true
@@ -130,14 +155,25 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # SBOM Generation
+  #
+  # Only runs on push-to-main. Rationale:
+  #   - goreleaser's release-time SBOMs (see .goreleaser.yaml `sboms:`) are
+  #     the authoritative SBOMs shipped with each release artifact.
+  #   - .github/workflows/sbom.yml runs on a weekly schedule to catch drift
+  #     in dependency graphs between releases.
+  #   - Running SBOM generation on every PR was duplicative and added ~2min
+  #     of CI time per PR without surfacing new information.
+  # If you need an SBOM for a PR locally, use `just sbom` or run
+  # `cyclonedx-gomod` directly.
   # ─────────────────────────────────────────────────────────────────────────
   sbom:
     name: Generate SBOM
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           install: true
           cache: true
@@ -159,7 +195,7 @@ jobs:
           args: app -output sbom-modules.cyclonedx.json -json .
 
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-reports
           path: |

@@ -22,14 +22,14 @@ func init() {
 	// --json-output is validate-specific: outputs validation errors as JSON for machine consumption.
 	// Scoped here (not on rootCmd) so it only appears on commands that act on it (issue #479).
 	validateCmd.Flags().Bool("json-output", false, "Output errors in JSON format (for machine consumption)")
-	setFlagAnnotation(validateCmd.Flags(), "json-output", []string{"output"})
+	setFlagAnnotation(validateCmd.Flags(), "json-output", []flagCategory{categoryOutput})
 }
 
 // validateCmd is the cobra.Command for the validate subcommand.
 var validateCmd = &cobra.Command{ //nolint:gochecknoglobals // Cobra command
 	Use:               "validate [file ...]",
 	Short:             "Validate OPNsense configuration files",
-	GroupID:           "utility",
+	GroupID:           groupUtility,
 	ValidArgsFunction: ValidXMLFiles,
 	Long: `The 'validate' command checks one or more OPNsense config.xml files for
 structural and semantic correctness without performing any conversion.
@@ -45,16 +45,16 @@ The validation includes:
 
 Examples:
   # Validate a single configuration file
-  opnDossier validate config.xml
+  opndossier validate config.xml
 
   # Validate multiple configuration files
-  opnDossier validate config1.xml config2.xml config3.xml
+  opndossier validate config1.xml config2.xml config3.xml
 
   # Validate with verbose output to see detailed validation results
-  opnDossier --verbose validate config.xml
+  opndossier --verbose validate config.xml
 
   # Validate with quiet mode (only show errors)
-  opnDossier --quiet validate config.xml
+  opndossier --quiet validate config.xml
 `,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -94,8 +94,8 @@ Examples:
 			go func(fp string) {
 				defer wg.Done()
 
-				// Create context-aware logger for this goroutine with input file field
-				ctxLogger := cmdLogger.WithContext(ctx).WithFields("input_file", fp)
+				// Create logger for this goroutine with input file field
+				ctxLogger := cmdLogger.WithFields("input_file", fp)
 				ctxLogger.Info("Starting validation process")
 
 				// Sanitize the file path

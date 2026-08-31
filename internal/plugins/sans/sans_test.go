@@ -93,7 +93,8 @@ func TestSANSPlugin_RunChecks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Run the checks
-			findings := sansPlugin.RunChecks(tt.config)
+			findings, _, err := sansPlugin.RunChecks(tt.config)
+			require.NoError(t, err)
 
 			// Verify the expected number of findings
 			assert.Len(t, findings, len(tt.expectedFindingIDs), "Expected %d findings, got %d: %v",
@@ -259,7 +260,8 @@ func TestSANSPlugin_FindingSeverityMatchesControl(t *testing.T) {
 	}
 
 	for _, device := range configs {
-		findings := sansPlugin.RunChecks(device)
+		findings, _, err := sansPlugin.RunChecks(device)
+		require.NoError(t, err)
 		for _, finding := range findings {
 			control, err := sansPlugin.GetControlByID(finding.Reference)
 			require.NoError(t, err, "finding references unknown control %s", finding.Reference)
@@ -275,8 +277,48 @@ func TestSANSPlugin_FindingSeverityMatchesControl(t *testing.T) {
 	}
 }
 
+func TestSANSPlugin_DangerousPorts_FloatingRule(t *testing.T) {
+	sansPlugin := sans.NewPlugin()
+
+	// An unscoped floating pass rule (Floating: true, empty Interfaces) applies
+	// device-wide, so it must be treated as WAN-applicable when a live WAN
+	// interface exists. ruleAppliesToWAN delegates to analysis.RuleReachability
+	// specifically to catch this case, which a bare rule.Interfaces scan would
+	// miss. There was previously zero Floating coverage in this package.
+	config := &common.CommonDevice{
+		Interfaces: []common.Interface{
+			{Name: "wan", Enabled: true},
+		},
+		FirewallRules: []common.FirewallRule{
+			{
+				Type:        common.RuleTypePass,
+				Floating:    true,
+				Destination: common.RuleEndpoint{Port: "445"}, // SMB/CIFS - dangerous port
+			},
+		},
+	}
+
+	findings, _, err := sansPlugin.RunChecks(config)
+	require.NoError(t, err)
+
+	found := false
+	for _, finding := range findings {
+		if finding.Reference == "SANS-FW-014" {
+			found = true
+			break
+		}
+	}
+
+	assert.True(
+		t,
+		found,
+		"expected SANS-FW-014 finding for unscoped floating rule exposing a dangerous port on WAN, got: %v",
+		getFindings(findings),
+	)
+}
+
 func getFindings(findings []compliance.Finding) []string {
-	var ids []string
+	ids := make([]string, 0, len(findings))
 	for _, finding := range findings {
 		ids = append(ids, finding.Reference)
 	}

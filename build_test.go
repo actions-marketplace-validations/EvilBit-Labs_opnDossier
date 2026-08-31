@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/EvilBit-Labs/opnDossier/internal/testing/racedetect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -123,13 +124,30 @@ func (s *BuildTestSuite) TestBinaryConvert() {
 	s.Require().NoError(err, "convert should succeed, output: %s", output)
 }
 
+// skipIfRaceBuild skips the tests in this file under -race. They build the
+// binary with a plain `go build`, so the child process carries no race
+// instrumentation and the detector cannot observe anything it executes. All a
+// -race run adds is a cold build: the cache holds only race-flavored
+// artifacts, and the fresh compile alone overruns the 30-second budget on a
+// shared runner. The regular test jobs still run these on every push.
+func skipIfRaceBuild(t *testing.T) {
+	t.Helper()
+
+	if racedetect.Enabled {
+		t.Skip("Skipping subprocess build tests under -race: the child binary is not instrumented")
+	}
+}
+
 // TestBuildTestSuite runs the build test suite.
 func TestBuildTestSuite(t *testing.T) {
+	skipIfRaceBuild(t)
 	suite.Run(t, new(BuildTestSuite))
 }
 
 // TestBinaryHelp_Standalone verifies the binary builds and shows help.
 func TestBinaryHelp_Standalone(t *testing.T) {
+	skipIfRaceBuild(t)
+
 	if testing.Short() {
 		t.Skip("Skipping build test in short mode")
 	}
@@ -169,6 +187,8 @@ func TestBinaryHelp_Standalone(t *testing.T) {
 
 // TestBinaryConvert_Standalone verifies the binary can convert a config file.
 func TestBinaryConvert_Standalone(t *testing.T) {
+	skipIfRaceBuild(t)
+
 	if testing.Short() {
 		t.Skip("Skipping build conversion test in short mode")
 	}
@@ -225,4 +245,68 @@ func TestBinaryConvert_Standalone(t *testing.T) {
 		assert.NotContains(t, outputStr, "export data", "Should not have export data errors")
 		require.NoError(t, err, "convert should succeed, output: %s", outputStr)
 	})
+}
+
+// TestBinaryVersionSurfacesAgree builds with the same -X ldflags GoReleaser
+// uses and asserts that both version surfaces report the injected build.
+//
+// Regression: fang owns --version and, without fang.WithVersion, answered from
+// module build info — so a tagged release binary printed
+// "unknown (built from source)" for --version while `version` printed the real
+// tag. --version is the surface automation and package managers read.
+func TestBinaryVersionSurfacesAgree(t *testing.T) {
+	skipIfRaceBuild(t)
+
+	if testing.Short() {
+		t.Skip("Skipping build test in short mode")
+	}
+
+	const (
+		wantVersion = "9.9.9-test"
+		wantCommit  = "deadbee"
+	)
+
+	tempDir := t.TempDir()
+	binaryName := testBinaryName
+	if runtime.GOOS == windowsOS {
+		binaryName += exeExtension
+	}
+	binaryPath := filepath.Join(tempDir, binaryName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	ldflags := "-X main.version=" + wantVersion +
+		" -X github.com/EvilBit-Labs/opnDossier/cmd.gitCommit=" + wantCommit
+
+	build := exec.CommandContext(ctx, "go", "build", "-ldflags", ldflags, "-o", binaryPath, ".")
+	build.Dir = "."
+	buildOut, err := build.CombinedOutput()
+	require.NoError(t, err, "failed to build binary: %s", string(buildOut))
+
+	run := func(args ...string) string {
+		t.Helper()
+
+		runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer runCancel()
+
+		cmd := exec.CommandContext(runCtx, binaryPath, args...)
+		cmd.Dir = tempDir
+		out, runErr := cmd.CombinedOutput()
+		require.NoError(t, runErr, "%v failed: %s", args, string(out))
+		return string(out)
+	}
+
+	flagOut := run("--version")
+	subOut := run("version")
+
+	assert.Contains(t, flagOut, wantVersion, "--version must report the injected version")
+	// fang.WithCommit is what puts the commit on this surface. Without this
+	// assertion the option can be dropped and every other check here still
+	// passes, since --version keeps reporting the injected version alone.
+	assert.Contains(t, flagOut, wantCommit, "--version must report the injected commit")
+	assert.Contains(t, subOut, wantVersion, "version subcommand must report the injected version")
+	assert.Contains(t, subOut, wantCommit, "version subcommand must report the injected commit")
+	assert.NotContains(t, flagOut, "built from source",
+		"--version fell back to module build info instead of the injected version")
 }

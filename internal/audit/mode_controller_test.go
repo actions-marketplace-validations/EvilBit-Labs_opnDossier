@@ -3,6 +3,8 @@ package audit
 import (
 	"context"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/EvilBit-Labs/opnDossier/internal/analysis"
@@ -32,8 +34,15 @@ func (m *mockCompliancePlugin) Description() string {
 	return m.description
 }
 
-func (m *mockCompliancePlugin) RunChecks(_ *common.CommonDevice) []compliance.Finding {
-	return []compliance.Finding{}
+//nolint:gocritic // nonamedreturns enforced project-wide
+func (m *mockCompliancePlugin) RunChecks(_ *common.CommonDevice) ([]compliance.Finding, []string, error) {
+	controls := m.GetControls()
+	ids := make([]string, len(controls))
+	for i, c := range controls {
+		ids[i] = c.ID
+	}
+
+	return []compliance.Finding{}, ids, nil
 }
 
 func (m *mockCompliancePlugin) GetControls() []compliance.Control {
@@ -42,15 +51,6 @@ func (m *mockCompliancePlugin) GetControls() []compliance.Control {
 
 func (m *mockCompliancePlugin) GetControlByID(_ string) (*compliance.Control, error) {
 	return nil, compliance.ErrControlNotFound
-}
-
-func (m *mockCompliancePlugin) EvaluatedControlIDs(_ *common.CommonDevice) []string {
-	ids := make([]string, len(m.GetControls()))
-	for i, c := range m.GetControls() {
-		ids[i] = c.ID
-	}
-
-	return ids
 }
 
 func (m *mockCompliancePlugin) ValidateConfiguration() error {
@@ -185,6 +185,7 @@ func TestNewModeController(t *testing.T) {
 	}
 }
 
+//nolint:funlen // test table or data declaration; length is in data not logic
 func TestModeController_ValidateModeConfig(t *testing.T) {
 	t.Parallel()
 
@@ -985,7 +986,11 @@ func TestReport_EmptySummary(t *testing.T) {
 	}
 }
 
-//nolint:tparallel // Subtests share mutable report state and cannot run concurrently
+// TestReport_AnalysisMethods exercises the blue-mode add* methods against a
+// config with a known-bad WebGUI protocol, asserting real derived values
+// (R23) rather than merely non-empty metadata.
+//
+//nolint:tparallel // subtests share mutable report state and cannot run concurrently
 func TestReport_AnalysisMethods(t *testing.T) {
 	t.Parallel()
 
@@ -996,83 +1001,119 @@ func TestReport_AnalysisMethods(t *testing.T) {
 			System: common.System{
 				Hostname: "test-host",
 				Domain:   "test.local",
+				WebGUI:   common.WebGUI{Protocol: "http"},
 			},
+			Interfaces: []common.Interface{
+				{Name: "wan", Enabled: true},
+				{Name: "lan", Enabled: true},
+			},
+			FirewallRules: []common.FirewallRule{
+				{Type: common.RuleTypePass, Interfaces: []string{"lan"}},
+			},
+			Users: []common.User{{Name: "admin"}},
 		},
 		Findings:   make([]Finding, 0),
 		Compliance: make(map[string]ComplianceResult),
 		Metadata:   make(map[string]any),
 	}
 
-	// Test the analysis methods that add metadata to the report
+	// Test the analysis methods that add metadata to the report. R23: assert
+	// real values derived from the config, not merely that metadata is
+	// non-empty.
 	t.Run("addSecurityFindings", func(t *testing.T) {
-		report.addSecurityFindings()
-		// Verify that security findings were added
-		if len(report.Metadata) == 0 {
-			t.Error("addSecurityFindings() should add security findings to the report")
+		observations := analysis.ScanObservations(report.Configuration)
+		report.addSecurityFindings(observations)
+
+		if len(report.Findings) == 0 {
+			t.Fatal("addSecurityFindings() should append hygiene findings for an insecure WebGUI config")
+		}
+
+		found := false
+		for _, f := range report.Findings {
+			if f.Title == "Insecure Web GUI Protocol" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf(
+				"addSecurityFindings() findings = %+v, want a finding titled %q",
+				report.Findings,
+				"Insecure Web GUI Protocol",
+			)
+		}
+
+		if got := report.Metadata["security_findings_count"]; got != report.TotalFindingsCount() {
+			t.Errorf("security_findings_count = %v, want %d", got, report.TotalFindingsCount())
 		}
 	})
 
 	t.Run("addComplianceAnalysis", func(t *testing.T) {
 		report.addComplianceAnalysis()
-		// Verify that compliance analysis was added
-		if len(report.Metadata) == 0 {
-			t.Error("addComplianceAnalysis() should add compliance analysis to the report")
+
+		frameworks, ok := report.Metadata["compliance_frameworks"].([]string)
+		if !ok {
+			t.Fatalf(
+				"compliance_frameworks = %v (%T), want []string",
+				report.Metadata["compliance_frameworks"],
+				report.Metadata["compliance_frameworks"],
+			)
+		}
+		// No plugins were executed against this hand-built report, so the
+		// frameworks list must be empty — never the old hardcoded
+		// ["STIG","NIST","SANS"].
+		if len(frameworks) != 0 {
+			t.Errorf("compliance_frameworks = %v, want empty (no plugins executed)", frameworks)
 		}
 	})
 
 	t.Run("addRecommendations", func(t *testing.T) {
 		report.addRecommendations()
-		// Verify that recommendations were added
-		if len(report.Metadata) == 0 {
-			t.Error("addRecommendations() should add recommendations to the report")
+
+		count, ok := report.Metadata["recommendation_count"].(int)
+		if !ok {
+			t.Fatalf(
+				"recommendation_count = %v (%T), want int",
+				report.Metadata["recommendation_count"],
+				report.Metadata["recommendation_count"],
+			)
+		}
+		if count == 0 {
+			t.Error("recommendation_count = 0, want > 0 given the hygiene findings from the insecure config")
+		}
+
+		recs, ok := report.Metadata["recommendations"].([]Recommendation)
+		if !ok {
+			t.Fatalf(
+				"recommendations = %v (%T), want []Recommendation",
+				report.Metadata["recommendations"],
+				report.Metadata["recommendations"],
+			)
+		}
+		if len(recs) == 0 {
+			t.Error("recommendations should be non-empty")
 		}
 	})
 
 	t.Run("addStructuredConfigurationTables", func(t *testing.T) {
 		report.addStructuredConfigurationTables()
-		// Verify that structured configuration tables were added
-		if len(report.Metadata) == 0 {
-			t.Error("addStructuredConfigurationTables() should add structured configuration tables to the report")
-		}
-	})
 
-	t.Run("addWANExposedServices", func(t *testing.T) {
-		report.addWANExposedServices()
-		// Verify that WAN exposed services were added
-		if len(report.Metadata) == 0 {
-			t.Error("addWANExposedServices() should add WAN exposed services to the report")
+		summary, ok := report.Metadata["configuration_summary"].(ConfigSummary)
+		if !ok {
+			t.Fatalf(
+				"configuration_summary = %v (%T), want ConfigSummary",
+				report.Metadata["configuration_summary"],
+				report.Metadata["configuration_summary"],
+			)
 		}
-	})
 
-	t.Run("addWeakNATRules", func(t *testing.T) {
-		report.addWeakNATRules()
-		// Verify that weak NAT rules were added
-		if len(report.Metadata) == 0 {
-			t.Error("addWeakNATRules() should add weak NAT rules to the report")
+		want := ConfigSummary{
+			Interfaces:    2,
+			FirewallRules: 1,
+			NATRules:      0,
+			Users:         1,
 		}
-	})
-
-	t.Run("addAdminPortals", func(t *testing.T) {
-		report.addAdminPortals()
-		// Verify that admin portals were added
-		if len(report.Metadata) == 0 {
-			t.Error("addAdminPortals() should add admin portals to the report")
-		}
-	})
-
-	t.Run("addAttackSurfaces", func(t *testing.T) {
-		report.addAttackSurfaces()
-		// Verify that attack surfaces were added
-		if len(report.Metadata) == 0 {
-			t.Error("addAttackSurfaces() should add attack surfaces to the report")
-		}
-	})
-
-	t.Run("addEnumerationData", func(t *testing.T) {
-		report.addEnumerationData()
-		// Verify that enumeration data was added
-		if len(report.Metadata) == 0 {
-			t.Error("addEnumerationData() should add enumeration data to the report")
+		if summary != want {
+			t.Errorf("configuration_summary = %+v, want %+v", summary, want)
 		}
 	})
 }
@@ -1346,5 +1387,218 @@ func TestGenerateBlueReport_NoPluginsRunsAllAvailable(t *testing.T) {
 	// Verify metadata indicates compliance ran successfully.
 	if status, ok := report.Metadata["compliance_check_status"]; !ok || status != complianceCheckStatusCompleted {
 		t.Errorf("expected compliance_check_status=%s, got %v", complianceCheckStatusCompleted, status)
+	}
+}
+
+// TestAddSecurityFindings_DedupeAgainstFiredPluginControls covers AE1
+// (R8, R9): a hygiene observation referencing the same config element (an
+// exact Component match) as a fired plugin finding is suppressed, while a
+// hygiene observation on a different element in the same category is still
+// emitted.
+func TestAddSecurityFindings_DedupeAgainstFiredPluginControls(t *testing.T) {
+	t.Parallel()
+
+	report := &Report{
+		Mode:          ModeBlue,
+		Configuration: &common.CommonDevice{},
+		Findings:      make([]Finding, 0),
+		Compliance: map[string]ComplianceResult{
+			"firewall": {
+				Findings: []compliance.Finding{
+					{
+						Type:      "compliance",
+						Severity:  "high",
+						Title:     "Any Source on WAN Inbound",
+						Component: "filter.rule[0]",
+					},
+				},
+			},
+		},
+		Metadata: make(map[string]any),
+	}
+
+	observations := []analysis.Observation{
+		{
+			Severity:       analysis.SeverityHigh,
+			Confidence:     analysis.ConfidenceHigh,
+			Reachability:   analysis.WANReachable,
+			Component:      "filter.rule[0]",
+			Title:          "Overly Permissive WAN Rule",
+			Description:    "Rule 1 allows any source to pass traffic on WAN interface",
+			Recommendation: "Restrict source networks",
+		},
+		{
+			Severity:       analysis.SeverityHigh,
+			Confidence:     analysis.ConfidenceHigh,
+			Reachability:   analysis.WANReachable,
+			Component:      "filter.rule[1]",
+			Title:          "Overly Permissive WAN Rule",
+			Description:    "Rule 2 allows any source to pass traffic on WAN interface",
+			Recommendation: "Restrict source networks",
+		},
+	}
+
+	report.addSecurityFindings(observations)
+
+	if len(report.Findings) != 1 {
+		t.Fatalf(
+			"addSecurityFindings() len(Findings) = %d, want 1 (rule[0] suppressed as a duplicate of the fired plugin control, rule[1] retained)",
+			len(report.Findings),
+		)
+	}
+
+	if report.Findings[0].Component != "filter.rule[1]" {
+		t.Errorf(
+			"addSecurityFindings() surviving finding Component = %q, want %q",
+			report.Findings[0].Component, "filter.rule[1]",
+		)
+	}
+}
+
+// TestAddSecurityFindings_OrderedBySeverityThenReachability covers R12:
+// hygiene findings are ordered by severity (most urgent first), then by
+// reachability (most exposed first) within a severity tier.
+func TestAddSecurityFindings_OrderedBySeverityThenReachability(t *testing.T) {
+	t.Parallel()
+
+	report := &Report{
+		Mode:          ModeBlue,
+		Configuration: &common.CommonDevice{},
+		Findings:      make([]Finding, 0),
+		Compliance:    make(map[string]ComplianceResult),
+		Metadata:      make(map[string]any),
+	}
+
+	observations := []analysis.Observation{
+		{Severity: analysis.SeverityMedium, Reachability: analysis.WANReachable, Component: "a", Title: "medium-wan"},
+		{Severity: analysis.SeverityCritical, Reachability: analysis.Local, Component: "b", Title: "critical-local"},
+		{Severity: analysis.SeverityHigh, Reachability: analysis.LANOnly, Component: "c", Title: "high-lan"},
+		{Severity: analysis.SeverityHigh, Reachability: analysis.WANReachable, Component: "d", Title: "high-wan"},
+	}
+
+	report.addSecurityFindings(observations)
+
+	wantOrder := []string{"critical-local", "high-wan", "high-lan", "medium-wan"}
+	gotOrder := make([]string, len(report.Findings))
+	for i, f := range report.Findings {
+		gotOrder[i] = f.Title
+	}
+
+	if !slices.Equal(gotOrder, wantOrder) {
+		t.Errorf("addSecurityFindings() order = %v, want %v", gotOrder, wantOrder)
+	}
+}
+
+// TestAddComplianceAnalysis_FrameworksDerivedFromExecutedPlugins covers AE4
+// (R10): `--plugins stig` produces a compliance_frameworks list of exactly
+// ["STIG"], not the previously hardcoded ["STIG","NIST","SANS"].
+func TestAddComplianceAnalysis_FrameworksDerivedFromExecutedPlugins(t *testing.T) {
+	t.Parallel()
+
+	registry := NewPluginRegistry()
+	if err := registry.RegisterPlugin(stig.NewPlugin()); err != nil {
+		t.Fatalf("RegisterPlugin(stig): %v", err)
+	}
+
+	logger := newTestLogger(t)
+	controller := NewModeController(registry, logger)
+
+	device := &common.CommonDevice{
+		System: common.System{Hostname: "fw", Domain: "example.com"},
+	}
+
+	report, err := controller.GenerateReport(context.Background(), device, &ModeConfig{
+		Mode:            ModeBlue,
+		SelectedPlugins: []string{"stig"},
+	})
+	if err != nil {
+		t.Fatalf("GenerateReport() unexpected error: %v", err)
+	}
+
+	frameworks, ok := report.Metadata["compliance_frameworks"].([]string)
+	if !ok {
+		t.Fatalf(
+			"compliance_frameworks = %v (%T), want []string",
+			report.Metadata["compliance_frameworks"], report.Metadata["compliance_frameworks"],
+		)
+	}
+
+	want := []string{"STIG"}
+	if !slices.Equal(frameworks, want) {
+		t.Errorf("compliance_frameworks = %v, want %v", frameworks, want)
+	}
+}
+
+// TestGenerateBlueReport_SurfacesShadowedRuleFindings (U8, R15, KTD-7) is the
+// audit-level confirmation that a firewall-rule shadow reaches the rendered
+// blue-mode Findings, not just analysis.ScanObservations in isolation.
+//
+// This matters because addSecurityFindings de-dupes shared-engine
+// observations against fired plugin controls BY COMPONENT
+// (dedupeAgainstPluginFindings, R9) — see
+// TestAddSecurityFindings_DedupeAgainstFiredPluginControls above, which pins
+// exactly this behavior for the any-to-any-rule observation. A shadow
+// observation carries the same "filter.rule[N]" Component shape, so it is
+// subject to the identical dedup rule. This test uses a fresh, empty
+// PluginRegistry (no plugins registered, matching TestModeController_
+// GenerateReport's pattern) so RunComplianceChecks contributes zero plugin
+// findings and cannot collide with the shadow's Component — isolating the
+// question this test answers ("does the shadow reach report.Findings at
+// all") from the separate, already-covered, already-intentional dedup
+// behavior (which applies identically to every ScanObservations producer,
+// not something specific to shadows to fix here).
+func TestGenerateBlueReport_SurfacesShadowedRuleFindings(t *testing.T) {
+	t.Parallel()
+
+	registry := NewPluginRegistry()
+	logger := newTestLogger(t)
+	controller := NewModeController(registry, logger)
+
+	earlier := common.FirewallRule{
+		Type:        common.RuleTypePass,
+		Interfaces:  []string{"wan"},
+		Direction:   common.DirectionIn,
+		Quick:       true,
+		Source:      common.RuleEndpoint{Address: "any"},
+		Destination: common.RuleEndpoint{Address: "any", Port: "22"},
+	}
+	later := common.FirewallRule{
+		Type:        common.RuleTypeBlock,
+		Interfaces:  []string{"wan"},
+		Direction:   common.DirectionIn,
+		Quick:       true,
+		Source:      common.RuleEndpoint{Address: "10.0.0.0/8"},
+		Destination: common.RuleEndpoint{Address: "any", Port: "22"},
+	}
+
+	device := &common.CommonDevice{
+		System:        common.System{Hostname: "fw", Domain: "example.com"},
+		Interfaces:    []common.Interface{{Name: "wan", Enabled: true}},
+		FirewallRules: []common.FirewallRule{earlier, later},
+	}
+
+	report, err := controller.GenerateReport(context.Background(), device, &ModeConfig{
+		Mode: ModeBlue,
+	})
+	if err != nil {
+		t.Fatalf("GenerateReport() unexpected error: %v", err)
+	}
+
+	idx := slices.IndexFunc(report.Findings, func(f Finding) bool {
+		return f.Component == "filter.rule[1]"
+	})
+	if idx < 0 {
+		t.Fatalf(
+			"blue-mode report.Findings does not contain the shadowed rule at filter.rule[1]; findings: %+v",
+			report.Findings,
+		)
+	}
+
+	if !strings.Contains(report.Findings[idx].Title, "Shadowed Firewall Rule") {
+		t.Errorf(
+			"report.Findings[%d].Title = %q, want it to identify a shadow finding",
+			idx,
+			report.Findings[idx].Title,
+		)
 	}
 }

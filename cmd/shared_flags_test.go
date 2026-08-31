@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAddSharedTemplateFlagsRegistersFlags(t *testing.T) {
+func TestAddSharedContentFlagsRegistersFlags(t *testing.T) {
 	cmd := &cobra.Command{Use: "test"}
-	addSharedTemplateFlags(cmd)
+	addSharedContentFlags(cmd)
 
 	flags := cmd.Flags()
 	// These flags should exist
@@ -23,7 +23,7 @@ func TestAddSharedTemplateFlagsRegistersFlags(t *testing.T) {
 	require.NotNil(t, flags.Lookup("include-tunables"))
 	require.NotNil(t, flags.Lookup("comprehensive"))
 
-	// These template-related flags should NOT exist
+	// These legacy flags (removed in NATS-6) should NOT exist
 	assert.Nil(t, flags.Lookup("legacy"))
 	assert.Nil(t, flags.Lookup("custom-template"))
 	assert.Nil(t, flags.Lookup("template-cache-size"))
@@ -35,8 +35,8 @@ func TestAddSharedTemplateFlagsRegistersFlags(t *testing.T) {
 }
 
 func TestAddSharedRedactFlagRegistersFlag(t *testing.T) {
-	t.Parallel()
-
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	cmd := &cobra.Command{Use: "test"}
 	addSharedRedactFlag(cmd)
 
@@ -55,7 +55,8 @@ func TestAddDisplayFlagsRegistersTheme(t *testing.T) {
 }
 
 func TestValidFormats(t *testing.T) {
-	t.Parallel()
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	completions, directive := ValidFormats(nil, nil, "")
 	assert.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
 	require.Len(t, completions, 5)
@@ -68,28 +69,32 @@ func TestValidFormats(t *testing.T) {
 }
 
 func TestValidThemes(t *testing.T) {
-	t.Parallel()
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	completions, directive := ValidThemes(nil, nil, "")
 	assert.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
 	require.Len(t, completions, 4)
 }
 
 func TestValidSections(t *testing.T) {
-	t.Parallel()
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	completions, directive := ValidSections(nil, nil, "")
 	assert.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
 	require.Len(t, completions, 5)
 }
 
 func TestValidColorModes(t *testing.T) {
-	t.Parallel()
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	completions, directive := ValidColorModes(nil, nil, "")
 	assert.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
 	require.Len(t, completions, 3)
 }
 
 func TestValidDeviceTypes(t *testing.T) {
-	t.Parallel()
+	// Do NOT use t.Parallel() — cmd package uses package-level flag globals.
+	// See GOTCHAS §1.1.
 	completions, directive := ValidDeviceTypes(nil, nil, "")
 	assert.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
 	// At least the built-in opnsense type must be present; additional entries
@@ -166,7 +171,7 @@ func TestValidateDeviceType_CustomRegisteredType(t *testing.T) {
 	// Use a unique name to avoid collisions with other tests on the global registry.
 	const customType = "customfirewall-validate-test"
 
-	parser.DefaultRegistry().Register(customType, func(_ parser.XMLDecoder) parser.DeviceParser {
+	parser.DefaultRegistry().Register(customType, func(_ parser.OPNsenseXMLDecoder) parser.DeviceParser {
 		return nil // placeholder; only testing validation, not parsing
 	})
 
@@ -222,7 +227,7 @@ func TestResolveDeviceType_CustomRegisteredType(t *testing.T) {
 	// Register a custom type not in the built-in enum.
 	const customType = "customfirewall-resolve-test"
 
-	parser.DefaultRegistry().Register(customType, func(_ parser.XMLDecoder) parser.DeviceParser {
+	parser.DefaultRegistry().Register(customType, func(_ parser.OPNsenseXMLDecoder) parser.DeviceParser {
 		return nil
 	})
 

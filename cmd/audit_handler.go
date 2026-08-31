@@ -19,7 +19,7 @@ import (
 
 // handleAuditMode generates a report with audit findings.
 // It runs compliance checks, maps results onto a shallow copy of the device's
-// ComplianceChecks field, and delegates report generation to
+// ComplianceResults field, and delegates report generation to
 // generateWithProgrammaticGenerator. The input device is not mutated.
 func handleAuditMode(
 	ctx context.Context,
@@ -39,9 +39,10 @@ func handleAuditMode(
 		Mode:            mode,
 		Comprehensive:   opt.Comprehensive,
 		SelectedPlugins: auditOpts.SelectedPlugins,
+		Blackhat:        auditOpts.Blackhat,
 	}
 
-	pm := audit.NewPluginManager(logger)
+	pm := audit.NewPluginManager(logger, nil)
 
 	// Configure dynamic plugin directory before initialization so that
 	// LoadDynamicPlugins actually executes when the user provides a path.
@@ -91,7 +92,7 @@ func handleAuditMode(
 
 	// Create a shallow copy so the caller's device is not mutated.
 	enrichedDevice := *device
-	enrichedDevice.ComplianceChecks = mapAuditReportToComplianceResults(auditReport)
+	enrichedDevice.ComplianceResults = mapAuditReportToComplianceResults(auditReport)
 
 	// Thread audit-specific rendering options into converter options.
 	opt.FailuresOnly = auditOpts.FailuresOnly
@@ -143,15 +144,15 @@ func mapAuditReportToComplianceResults(report *audit.Report) *common.ComplianceR
 
 	for _, f := range report.Findings {
 		switch strings.ToLower(f.Severity) {
-		case "critical":
+		case severityCritical:
 			totalCritical++
-		case "high":
+		case severityHigh:
 			totalHigh++
-		case "medium":
+		case severityMedium:
 			totalMedium++
-		case "low":
+		case severityLow:
 			totalLow++
-		case "info":
+		case severityInfo:
 			totalInfo++
 		}
 	}

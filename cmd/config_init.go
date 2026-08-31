@@ -148,16 +148,16 @@ By default, the configuration file is created in your home directory as
 
 Examples:
   # Generate template in default location (~/.opnDossier.yaml)
-  opnDossier config init
+  opndossier config init
 
   # Generate template at a custom path
-  opnDossier config init --output /path/to/config.yaml
+  opndossier config init --output /path/to/config.yaml
 
   # Overwrite existing configuration file
-  opnDossier config init --force
+  opndossier config init --force
 
   # Generate in current directory
-  opnDossier config init --output .opnDossier.yaml`,
+  opndossier config init --output .opnDossier.yaml`,
 	Args: cobra.NoArgs,
 	RunE: runConfigInit,
 }
@@ -168,11 +168,11 @@ func init() {
 
 	configInitCmd.Flags().
 		StringVarP(&configInitOutputPath, "output", "o", "", "Output path for configuration file (default: ~/.opnDossier.yaml)")
-	setFlagAnnotation(configInitCmd.Flags(), "output", []string{"output"})
+	setFlagAnnotation(configInitCmd.Flags(), "output", []flagCategory{categoryOutput})
 
 	configInitCmd.Flags().
 		BoolVarP(&configInitForce, "force", "f", false, "Overwrite existing configuration file")
-	setFlagAnnotation(configInitCmd.Flags(), "force", []string{"output"})
+	setFlagAnnotation(configInitCmd.Flags(), "force", []flagCategory{categoryOutput})
 }
 
 // runConfigInit executes the config init command.

@@ -4,6 +4,7 @@ package stig
 import (
 	"slices"
 
+	"github.com/EvilBit-Labs/opnDossier/internal/analysis"
 	"github.com/EvilBit-Labs/opnDossier/internal/compliance"
 	"github.com/EvilBit-Labs/opnDossier/internal/constants"
 	common "github.com/EvilBit-Labs/opnDossier/pkg/model"
@@ -18,6 +19,9 @@ const (
 // Plugin implements the compliance.Plugin interface for STIG plugin.
 type Plugin struct {
 	controls []compliance.Control
+	// severityByID maps control ID -> severity for O(1) lookups during finding
+	// construction (previously O(n) linear scan over controls).
+	severityByID map[string]string
 }
 
 // NewPlugin creates a new STIG compliance plugin.
@@ -127,6 +131,11 @@ func NewPlugin() *Plugin {
 		},
 	}
 
+	p.severityByID = make(map[string]string, len(p.controls))
+	for _, c := range p.controls {
+		p.severityByID[c.ID] = c.Severity
+	}
+
 	return p
 }
 
@@ -145,14 +154,30 @@ func (sp *Plugin) Description() string {
 	return "STIG (Security Technical Implementation Guide) compliance checks for firewall security"
 }
 
-// RunChecks performs STIG compliance checks.
-func (sp *Plugin) RunChecks(device *common.CommonDevice) []compliance.Finding {
-	var findings []compliance.Finding
+// RunChecks performs STIG compliance checks in a single traversal. Returns
+// (findings, evaluated, err). All 10 STIG controls can be evaluated from
+// config.xml data, so every control ID is appended to evaluated regardless of
+// pass/fail — this matches the semantics of the previous EvaluatedControlIDs
+// implementation that unconditionally returned all IDs.
+//
+// err is currently always nil; reserved for future unrecoverable conditions.
+//
+//nolint:gocritic // nonamedreturns enforced project-wide; docstring clarifies return shape.
+func (sp *Plugin) RunChecks(
+	device *common.CommonDevice,
+) ([]compliance.Finding, []string, error) {
+	findings := make([]compliance.Finding, 0, len(sp.controls))
+
+	// Pre-build evaluated with every control ID — STIG evaluates them all.
+	evaluated := make([]string, 0, len(sp.controls))
+	for _, c := range sp.controls {
+		evaluated = append(evaluated, c.ID)
+	}
 
 	// V-206694: Default deny policy
 	if !sp.hasDefaultDenyPolicy(device) {
 		findings = append(findings, compliance.Finding{
-			Type:           "compliance",
+			Type:           constants.FindingTypeCompliance,
 			Severity:       sp.controlSeverity("V-206694"),
 			Title:          "Missing Default Deny Policy",
 			Description:    "Firewall does not implement a default deny policy for all traffic",
@@ -167,7 +192,7 @@ func (sp *Plugin) RunChecks(device *common.CommonDevice) []compliance.Finding {
 	// V-206674: Specific packet filtering
 	if sp.hasOverlyPermissiveRules(device) {
 		findings = append(findings, compliance.Finding{
-			Type:           "compliance",
+			Type:           constants.FindingTypeCompliance,
 			Severity:       sp.controlSeverity("V-206674"),
 			Title:          "Overly Permissive Firewall Rules",
 			Description:    "Firewall contains rules that are too broad or permissive",
@@ -182,7 +207,7 @@ func (sp *Plugin) RunChecks(device *common.CommonDevice) []compliance.Finding {
 	// V-206690: Unnecessary services
 	if sp.hasUnnecessaryServices(device) {
 		findings = append(findings, compliance.Finding{
-			Type:           "compliance",
+			Type:           constants.FindingTypeCompliance,
 			Severity:       sp.controlSeverity("V-206690"),
 			Title:          "Unnecessary Network Services Enabled",
 			Description:    "Firewall has unnecessary network services enabled",
@@ -197,7 +222,7 @@ func (sp *Plugin) RunChecks(device *common.CommonDevice) []compliance.Finding {
 	// V-206682: Comprehensive logging
 	if !sp.hasComprehensiveLogging(device) {
 		findings = append(findings, compliance.Finding{
-			Type:           "compliance",
+			Type:           constants.FindingTypeCompliance,
 			Severity:       sp.controlSeverity("V-206682"),
 			Title:          "Insufficient Firewall Logging",
 			Description:    "Firewall does not generate comprehensive logs for all traffic",
@@ -212,7 +237,7 @@ func (sp *Plugin) RunChecks(device *common.CommonDevice) []compliance.Finding {
 	// V-206701: DoS prevention filters (rate limiting on rules)
 	if !sp.hasDoSPreventionFilters(device) {
 		findings = append(findings, compliance.Finding{
-			Type:           "compliance",
+			Type:           constants.FindingTypeCompliance,
 			Severity:       sp.controlSeverity("V-206701"),
 			Title:          "Missing DoS Prevention Filters",
 			Description:    "Firewall does not implement rate limiting or connection throttling on pass rules",
@@ -238,7 +263,7 @@ func (sp *Plugin) RunChecks(device *common.CommonDevice) []compliance.Finding {
 			{"V-206681", "Source Information Logging Not Configured", "Firewall does not log source IP/identifier information"},
 		} {
 			findings = append(findings, compliance.Finding{
-				Type:           "compliance",
+				Type:           constants.FindingTypeCompliance,
 				Severity:       sp.controlSeverity(ctrl.id),
 				Title:          ctrl.title,
 				Description:    ctrl.desc,
@@ -255,7 +280,7 @@ func (sp *Plugin) RunChecks(device *common.CommonDevice) []compliance.Finding {
 	// We can partially check: is IDS enabled?
 	if !sp.hasDoSAlerting(device) {
 		findings = append(findings, compliance.Finding{
-			Type:           "compliance",
+			Type:           constants.FindingTypeCompliance,
 			Severity:       sp.controlSeverity("V-206711"),
 			Title:          "DoS Incident Alerting Not Configured",
 			Description:    "Firewall does not have IDS/IPS-based DoS alerting configured",
@@ -267,7 +292,7 @@ func (sp *Plugin) RunChecks(device *common.CommonDevice) []compliance.Finding {
 		})
 	}
 
-	return findings
+	return findings, evaluated, nil
 }
 
 // GetControls returns all STIG controls. The returned slice is a deep copy to
@@ -275,19 +300,6 @@ func (sp *Plugin) RunChecks(device *common.CommonDevice) []compliance.Finding {
 // reference types (References, Tags, Metadata).
 func (sp *Plugin) GetControls() []compliance.Control {
 	return compliance.CloneControls(sp.controls)
-}
-
-// EvaluatedControlIDs returns the IDs of controls this plugin can evaluate.
-// All 10 STIG controls can be evaluated from config.xml data: the original 4
-// check firewall rules/services/syslog, V-206701 checks rate-limiting fields,
-// V-206680/679/678/681 check syslog enablement, V-206711 checks IDS presence.
-func (sp *Plugin) EvaluatedControlIDs(_ *common.CommonDevice) []string {
-	ids := make([]string, len(sp.controls))
-	for i, c := range sp.controls {
-		ids[i] = c.ID
-	}
-
-	return ids
 }
 
 // GetControlByID returns a specific control by ID.
@@ -310,17 +322,11 @@ func (sp *Plugin) ValidateConfiguration() error {
 	return nil
 }
 
-// controlSeverity returns the severity for a control ID from the control
-// definitions. This ensures findings derive severity from the single source
-// of truth (the control metadata) rather than hard-coding literals.
+// controlSeverity returns the severity for a control ID from the pre-built
+// severityByID map populated in NewPlugin. Returns "" when the ID is unknown.
+// O(1) — replaces the historical O(n) linear scan over sp.controls.
 func (sp *Plugin) controlSeverity(id string) string {
-	for _, c := range sp.controls {
-		if c.ID == id {
-			return c.Severity
-		}
-	}
-
-	return ""
+	return sp.severityByID[id]
 }
 
 // hasDefaultDenyPolicy checks whether the device's firewall implements a default deny
@@ -350,11 +356,12 @@ func (sp *Plugin) hasDefaultDenyPolicy(device *common.CommonDevice) bool {
 	hasAnyAnyAllow := false
 
 	for _, rule := range rules {
-		if rule.Type == common.RuleTypePass {
-			srcTarget := rule.Source.Address
-			dstTarget := rule.Destination.Address
-
-			if srcTarget == constants.NetworkAny && (dstTarget == "" || dstTarget == constants.NetworkAny) {
+		// A disabled rule overrides nothing, so it cannot defeat a default-deny
+		// policy. Now that an omitted address counts as a wildcard, skipping
+		// them keeps a disabled rule with no endpoints set from reading as
+		// any/any.
+		if !rule.Disabled && rule.Type == common.RuleTypePass {
+			if analysis.IsAnyEndpoint(rule.Source) && analysis.IsAnyEndpoint(rule.Destination) {
 				hasAnyAnyAllow = true
 				break
 			}
@@ -366,39 +373,62 @@ func (sp *Plugin) hasDefaultDenyPolicy(device *common.CommonDevice) bool {
 	return hasExplicitDeny && !hasAnyAnyAllow
 }
 
+// isBroadEndpoint reports whether an endpoint still matches a broad swathe of
+// hosts once its inverted-match flag is taken into account.
+//
+// broadNetworks holds the wildcards themselves ("any", 0.0.0.0/0, ::/0)
+// alongside genuinely large but bounded ranges. Those two halves invert
+// differently: a negated wildcard matches nothing and is not broad, while a
+// negated bounded range is everything outside it and stays broad. Testing
+// membership on the raw address alone would keep reporting a rule that matches
+// no traffic as overly permissive.
+func isBroadEndpoint(ep common.RuleEndpoint, addr string) bool {
+	if ep.Negated && analysis.IsAnyAddress(addr) {
+		return false
+	}
+
+	return slices.Contains(broadNetworks, addr)
+}
+
 // hasOverlyPermissiveRules checks whether the device contains firewall pass rules with
 // overly broad source or destination addresses, wide network ranges, or missing port
 // restrictions that violate STIG packet-filtering requirements.
+//
+// Disabled rules are skipped: they forward nothing, so they cannot be overly
+// permissive. That matters now an omitted address counts as a wildcard, which
+// makes a disabled rule with no endpoints set look maximally broad.
 func (sp *Plugin) hasOverlyPermissiveRules(device *common.CommonDevice) bool {
 	// Check for overly permissive firewall rules
 	rules := device.FirewallRules
 
 	for _, rule := range rules {
-		if rule.Type != common.RuleTypePass {
+		if rule.Disabled || rule.Type != common.RuleTypePass {
 			continue
 		}
 
 		srcTarget := rule.Source.Address
 		dstTarget := rule.Destination.Address
 
-		srcBroad := srcTarget == constants.NetworkAny || slices.Contains(broadNetworks, srcTarget)
-		dstBroad := dstTarget == "" || dstTarget == constants.NetworkAny ||
-			slices.Contains(broadNetworks, dstTarget)
+		srcAny := analysis.IsAnyEndpoint(rule.Source)
+		dstAny := analysis.IsAnyEndpoint(rule.Destination)
+
+		srcBroad := srcAny || isBroadEndpoint(rule.Source, srcTarget)
+		dstBroad := dstAny || isBroadEndpoint(rule.Destination, dstTarget)
 
 		// Check for "any/any" rules (most permissive)
-		if srcTarget == constants.NetworkAny && (dstTarget == "" || dstTarget == constants.NetworkAny) {
+		if srcAny && dstAny {
 			return true
 		}
 
 		// Check for broad network ranges (e.g., entire subnets without specific restrictions)
-		if srcTarget != "" && srcBroad && dstBroad {
+		if srcBroad && dstBroad {
 			return true
 		}
 
 		// Check for broad rules without specific port restrictions (TCP/UDP or unspecified protocol)
 		if srcBroad && dstBroad &&
 			(rule.Protocol == "" || rule.Protocol == "tcp" || rule.Protocol == "udp" || rule.Protocol == "tcp/udp") &&
-			(rule.Destination.Port == "" || rule.Destination.Port == constants.NetworkAny) {
+			analysis.IsAnyPort(rule.Destination.Port) {
 			return true
 		}
 	}

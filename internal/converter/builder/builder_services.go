@@ -53,7 +53,7 @@ func (b *MarkdownBuilder) writeServicesSection(md *markdown.Markdown, data *comm
 				})
 			}
 			md.Table(markdown.TableSet{
-				Header: []string{"Option Number", "Type", "Value"},
+				Header: []string{"Option Number", colType, colValue},
 				Rows:   numOptRows,
 			})
 		}
@@ -75,23 +75,27 @@ func (b *MarkdownBuilder) writeServicesSection(md *markdown.Markdown, data *comm
 
 	md.H3("DNS Resolver (Unbound)")
 	if data.DNS.Unbound.Enabled {
-		md.PlainTextf("%s: %s", markdown.Bold("Enabled"), formatters.FormatBool(data.DNS.Unbound.Enabled)).LF()
+		md.PlainTextf("%s: %s", markdown.Bold(labelEnabled), formatters.FormatBool(data.DNS.Unbound.Enabled)).LF()
 	}
 
 	md.H3("SNMP")
 	if data.SNMP.SysLocation != "" {
-		md.PlainTextf("%s: %s", markdown.Bold("System Location"), data.SNMP.SysLocation).LF()
+		md.PlainTextf("%s: %s", markdown.Bold("System Location"), formatters.EscapeMarkdownValue(data.SNMP.SysLocation)).
+			LF()
 	}
 	if data.SNMP.SysContact != "" {
-		md.PlainTextf("%s: %s", markdown.Bold("System Contact"), data.SNMP.SysContact).LF()
+		md.PlainTextf("%s: %s", markdown.Bold("System Contact"), formatters.EscapeMarkdownValue(data.SNMP.SysContact)).
+			LF()
 	}
 	if data.SNMP.ROCommunity != "" {
-		md.PlainTextf("%s: %s", markdown.Bold("Read-Only Community"), data.SNMP.ROCommunity).LF()
+		md.PlainTextf("%s: %s", markdown.Bold("Read-Only Community"), formatters.EscapeMarkdownValue(data.SNMP.ROCommunity)).
+			LF()
 	}
 
 	md.H3("NTP")
 	if data.NTP.PreferredServer != "" {
-		md.PlainTextf("%s: %s", markdown.Bold("Preferred Server"), data.NTP.PreferredServer).LF()
+		md.PlainTextf("%s: %s", markdown.Bold("Preferred Server"), formatters.EscapeMarkdownValue(data.NTP.PreferredServer)).
+			LF()
 	}
 
 	if len(data.LoadBalancer.MonitorTypes) > 0 {
@@ -105,7 +109,7 @@ func (b *MarkdownBuilder) writeServicesSection(md *markdown.Markdown, data *comm
 		}
 		md.H3("Load Balancer Monitors").
 			Table(markdown.TableSet{
-				Header: []string{"Name", "Type", "Description"},
+				Header: []string{colName, colType, colDescription},
 				Rows:   rows,
 			})
 	}
@@ -116,7 +120,7 @@ func (b *MarkdownBuilder) BuildServicesSection(data *common.CommonDevice) string
 	var buf bytes.Buffer
 	md := markdown.NewMarkdown(&buf)
 	b.writeServicesSection(md, data)
-	return md.String()
+	return renderMarkdown(md)
 }
 
 // WriteDHCPSummaryTable writes a DHCP scope summary table and returns md for chaining.
@@ -127,8 +131,8 @@ func (b *MarkdownBuilder) WriteDHCPSummaryTable(md *markdown.Markdown, scopes []
 // BuildDHCPSummaryTableSet builds the table data for DHCP scope summary.
 func BuildDHCPSummaryTableSet(scopes []common.DHCPScope) *markdown.TableSet {
 	headers := []string{
-		"Interface",
-		"Enabled",
+		colInterface,
+		colEnabled,
 		"Gateway",
 		"Range Start",
 		"Range End",
@@ -152,7 +156,7 @@ func BuildDHCPSummaryTableSet(scopes []common.DHCPScope) *markdown.TableSet {
 				formatters.EscapeTableContent(scope.Gateway),
 				formatters.EscapeTableContent(scope.Range.From),
 				formatters.EscapeTableContent(scope.Range.To),
-				formatters.EscapeTableContent(scope.DNSServer),
+				formatters.EscapeTableContent(dhcpDNSCell(scope)),
 				formatters.EscapeTableContent(scope.WINSServer),
 				formatters.EscapeTableContent(scope.NTPServer),
 			})
@@ -184,7 +188,7 @@ func BuildDHCPStaticLeasesTableSet(leases []common.DHCPStaticLease) *markdown.Ta
 		"Rootpath",
 		"Default Lease",
 		"Max Lease",
-		"Description",
+		colDescription,
 	}
 
 	rows := make([][]string, 0, len(leases))
@@ -214,4 +218,19 @@ func BuildDHCPStaticLeasesTableSet(leases []common.DHCPStaticLease) *markdown.Ta
 		Header: headers,
 		Rows:   rows,
 	}
+}
+
+// dhcpDNSCell renders a scope's DNS servers, falling back to the deprecated
+// scalar. A CommonDevice built by a consumer or unmarshalled from JSON written
+// before DNSServers existed populates only DNSServer, and must not render an
+// empty cell while that field is still supported.
+func dhcpDNSCell(scope common.DHCPScope) string {
+	if len(scope.DNSServers) > 0 {
+		return strings.Join(scope.DNSServers, ", ")
+	}
+
+	// Reading the deprecated field is the point of this fallback: it is what a
+	// consumer built before DNSServers existed populates.
+	//nolint:staticcheck // SA1019: deliberate, for the deprecation cycle
+	return scope.DNSServer
 }

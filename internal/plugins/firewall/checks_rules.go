@@ -4,7 +4,7 @@ package firewall
 import (
 	"strings"
 
-	"github.com/EvilBit-Labs/opnDossier/internal/constants"
+	"github.com/EvilBit-Labs/opnDossier/internal/analysis"
 	common "github.com/EvilBit-Labs/opnDossier/pkg/model"
 )
 
@@ -14,15 +14,6 @@ import (
 //
 
 const disabledRuleThreshold = 10
-
-// isWANInterface reports whether the given interface name represents a WAN
-// interface. The check is case-insensitive and matches "wan" as well as
-// prefixed variants like "wan2".
-func isWANInterface(name string) bool {
-	lower := strings.ToLower(name)
-
-	return lower == "wan" || strings.HasPrefix(lower, "wan")
-}
 
 // checkNoAnyAnyPassRules checks that no firewall pass rules exist with source,
 // destination, port, and protocol all set to "any". Such rules effectively
@@ -41,10 +32,10 @@ func (fp *Plugin) checkNoAnyAnyPassRules(device *common.CommonDevice) checkResul
 			continue
 		}
 
-		srcAny := rule.Source.Address == constants.NetworkAny
-		dstAny := rule.Destination.Address == constants.NetworkAny
-		portAny := rule.Destination.Port == "" || rule.Destination.Port == constants.NetworkAny
-		protoAny := rule.Protocol == "" || strings.EqualFold(rule.Protocol, constants.NetworkAny)
+		srcAny := analysis.IsAnyEndpoint(rule.Source)
+		dstAny := analysis.IsAnyEndpoint(rule.Destination)
+		portAny := analysis.IsAnyPort(rule.Destination.Port)
+		protoAny := analysis.IsAnyProtocol(rule.Protocol)
 
 		if srcAny && dstAny && portAny && protoAny {
 			return checkResult{Result: false, Known: true}
@@ -67,10 +58,12 @@ func (fp *Plugin) checkNoAnySourceOnWANInbound(device *common.CommonDevice) chec
 			continue
 		}
 
-		for _, iface := range rule.Interfaces {
-			if isWANInterface(iface) && rule.Source.Address == constants.NetworkAny {
-				return checkResult{Result: false, Known: true}
-			}
+		// RuleReachability (not a bare rule.Interfaces scan) so unscoped
+		// floating pass rules with source=any on WAN are not missed — their
+		// interface list is empty and would otherwise skip the loop entirely.
+		if analysis.IsAnyEndpoint(rule.Source) &&
+			analysis.RuleReachability(rule, device.Interfaces) == analysis.WANReachable {
+			return checkResult{Result: false, Known: true}
 		}
 	}
 
@@ -96,7 +89,7 @@ func (fp *Plugin) checkSpecificPortRules(device *common.CommonDevice) checkResul
 			continue
 		}
 
-		portEmpty := rule.Destination.Port == "" || rule.Destination.Port == constants.NetworkAny
+		portEmpty := analysis.IsAnyPort(rule.Destination.Port)
 		if portEmpty && (proto == "tcp" || proto == "udp" || proto == "tcp/udp" || proto == "") {
 			return checkResult{Result: false, Known: true}
 		}
@@ -156,7 +149,7 @@ func (fp *Plugin) checkProtocolSpecification(device *common.CommonDevice) checkR
 			continue
 		}
 
-		if rule.Protocol == "" || strings.EqualFold(rule.Protocol, constants.NetworkAny) {
+		if analysis.IsAnyProtocol(rule.Protocol) {
 			return checkResult{Result: false, Known: true}
 		}
 	}
@@ -194,7 +187,7 @@ func (fp *Plugin) checkPrivateAddressFilteringOnWAN(device *common.CommonDevice)
 
 	foundWAN := false
 	for _, iface := range device.Interfaces {
-		if isWANInterface(iface.Name) {
+		if analysis.InterfaceReachability(iface) == analysis.WANReachable {
 			foundWAN = true
 			if !iface.BlockPrivate {
 				return checkResult{Result: false, Known: true}
@@ -218,7 +211,7 @@ func (fp *Plugin) checkBogonFilteringOnWAN(device *common.CommonDevice) checkRes
 
 	foundWAN := false
 	for _, iface := range device.Interfaces {
-		if isWANInterface(iface.Name) {
+		if analysis.InterfaceReachability(iface) == analysis.WANReachable {
 			foundWAN = true
 			if !iface.BlockBogons {
 				return checkResult{Result: false, Known: true}
@@ -302,10 +295,7 @@ func (fp *Plugin) checkSYNFloodProtection(device *common.CommonDevice) checkResu
 	return unknown
 }
 
-// checkConnectionStateLimits checks whether firewall rules define maximum
-// connection state limits. The CommonDevice model exposes MaxSrcNodes,
-// MaxSrcConn, and MaxSrcConnRate on FirewallRule but there is no global
-// maximum states setting, so this check cannot be evaluated.
-func (fp *Plugin) checkConnectionStateLimits(_ *common.CommonDevice) checkResult {
-	return unknown
-}
+// FIREWALL-035 (checkConnectionStateLimits) was a no-op returning unknown —
+// the CommonDevice model has no global max-states setting. Removed with the
+// EvaluatedControlIDs cleanup; control remains in controls.go so the report
+// labels it UNCONFIRMED.

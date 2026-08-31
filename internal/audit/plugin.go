@@ -15,6 +15,7 @@ import (
 
 	"github.com/EvilBit-Labs/opnDossier/internal/analysis"
 	"github.com/EvilBit-Labs/opnDossier/internal/compliance"
+	"github.com/EvilBit-Labs/opnDossier/internal/constants"
 	"github.com/EvilBit-Labs/opnDossier/internal/logging"
 	common "github.com/EvilBit-Labs/opnDossier/pkg/model"
 )
@@ -129,7 +130,7 @@ func (pr *PluginRegistry) ListPlugins() []string {
 // Per-plugin failures are collected in the returned LoadResult and aggregated into
 // the returned error via errors.Join.
 func (pr *PluginRegistry) LoadDynamicPlugins(
-	ctx context.Context,
+	_ context.Context,
 	dir string,
 	explicitDir bool,
 	logger *logging.Logger,
@@ -138,7 +139,7 @@ func (pr *PluginRegistry) LoadDynamicPlugins(
 		return LoadResult{}, errors.New("nil logger provided to LoadDynamicPlugins")
 	}
 
-	ctxLogger := logger.WithContext(ctx)
+	ctxLogger := logger
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -168,6 +169,20 @@ func (pr *PluginRegistry) LoadDynamicPlugins(
 		}
 
 		path := filepath.Join(dir, entry.Name())
+
+		// Preflight hardening (see GOTCHAS §2.5 — Phase A): reject
+		// symlinks, group/world-writable plugin files, group/world-writable
+		// container directories, and non-absolute paths before plugin.Open
+		// is ever called. A structured audit-log entry is emitted for every
+		// attempt, accepted or rejected.
+		preflight := runPluginPreflight(path)
+		logPreflight(ctxLogger, preflight)
+
+		if preflight.verdict != pluginVerdictAccepted {
+			failures = append(failures, PluginLoadError{Name: entry.Name(), Err: preflight.err})
+
+			continue
+		}
 
 		compliancePlugin, err := pr.pluginLoader(path)
 		if err != nil {
@@ -260,103 +275,186 @@ func (pr *PluginRegistry) RunComplianceChecks(
 	}
 
 	for _, pluginName := range pluginNames {
-		p, err := pr.GetPlugin(pluginName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get plugin '%s': %w", pluginName, err)
+		if err := pr.runPluginChecks(device, pluginName, logger, result); err != nil {
+			return nil, err
 		}
+	}
 
-		// Run checks for this plugin inside a recovery boundary so that a
-		// panicking plugin (especially a dynamically-loaded one) cannot crash
-		// the entire audit process. On panic, findings remains nil and the
-		// plugin is retained in the result with zero findings.
-		var findings []compliance.Finding
-		var panicked bool
+	// Calculate summary. Surface unknown-severity findings (see GOTCHAS §2.4)
+	// so operators notice plugins producing severities outside the known set.
+	summary, unknownSeverityCount := pr.calculateSummary(result)
+	result.Summary = summary
 
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					panicked = true
-					logger.Error("plugin panicked during RunChecks",
-						"plugin", pluginName,
-						"panic", r,
-						"stack", string(debug.Stack()),
-					)
-				}
-			}()
-			findings = p.RunChecks(device)
-		}()
+	if unknownSeverityCount > 0 {
+		logger.Warn(
+			"Compliance summary contains findings with unrecognized severity",
+			"unknownCount", unknownSeverityCount,
+		)
+	}
 
-		// When a plugin panicked, its internal state may be corrupt.
-		// Use only the pluginName (already known) and skip method calls
-		// that could trigger a secondary unrecovered panic.
-		if panicked {
-			result.PluginFindings[pluginName] = nil
-			result.PluginInfo[pluginName] = PluginInfo{
-				Name:    pluginName,
-				Version: "unknown (panicked)",
+	return result, nil
+}
+
+// runPluginChecks executes one plugin against device, records the resulting
+// findings/PluginInfo/Compliance into result, and returns any non-recoverable
+// error. Panics inside the plugin's RunChecks are contained by
+// invokePluginWithRecovery; on panic the plugin is retained with empty
+// findings so downstream consumers still see it was evaluated.
+func (pr *PluginRegistry) runPluginChecks(
+	device *common.CommonDevice,
+	pluginName string,
+	logger *logging.Logger,
+	result *ComplianceResult,
+) error {
+	p, err := pr.GetPlugin(pluginName)
+	if err != nil {
+		return fmt.Errorf("failed to get plugin '%s': %w", pluginName, err)
+	}
+
+	findings, evaluated, panicked, runErr := invokePluginWithRecovery(p, device, pluginName, logger)
+	if panicked {
+		result.PluginFindings[pluginName] = nil
+		result.PluginInfo[pluginName] = PluginInfo{
+			Name:    pluginName,
+			Version: "unknown (panicked)",
+		}
+		result.Compliance[pluginName] = make(map[string]bool)
+		return nil
+	}
+	if runErr != nil {
+		return fmt.Errorf("plugin %q RunChecks failed: %w", pluginName, runErr)
+	}
+
+	// Normalize findings: derive missing Severity from control metadata.
+	for i := range findings {
+		if findings[i].Severity == "" {
+			severity, derr := deriveSeverityFromControl(p, findings[i])
+			if derr != nil {
+				return fmt.Errorf("plugin %q produced invalid finding: %w", pluginName, derr)
 			}
-			result.Compliance[pluginName] = make(map[string]bool)
+			findings[i].Severity = severity
+		}
+	}
+
+	result.PluginFindings[pluginName] = findings
+	result.Findings = append(result.Findings, findings...)
+
+	// GetControls is contractually required to return a defensive deep copy
+	// (see compliance.Plugin) so we assign it directly without an additional
+	// CloneControls call — dropping the historical double-clone on every audit.
+	result.PluginInfo[pluginName] = PluginInfo{
+		Name:        p.Name(),
+		Version:     p.Version(),
+		Description: p.Description(),
+		Controls:    p.GetControls(),
+	}
+
+	// Initialize compliance tracking for this plugin. Only controls the plugin
+	// can evaluate are seeded true; controls absent from the map are
+	// UNCONFIRMED. Inventory findings then flip evaluated controls to false.
+	complianceMap := make(map[string]bool, len(evaluated))
+	for _, id := range evaluated {
+		complianceMap[id] = true
+	}
+	applyFindingsToCompliance(complianceMap, findings, pluginName, logger)
+	result.Compliance[pluginName] = complianceMap
+	return nil
+}
+
+// invokePluginWithRecovery runs p.RunChecks inside a panic boundary. A
+// panicking plugin (especially a dynamically-loaded one) must not crash the
+// entire audit process. Returned panicked=true means the plugin aborted; the
+// caller should record it with empty findings. Stack dumps are gated behind
+// verbose logging so plugin function names (which can leak internal paths
+// like "acmecorp-pci-plugin.RunChecks") do not end up in shared logs.
+//
+//nolint:nonamedreturns // panic recovery in the deferred func must overwrite the success value; a named return is the idiomatic way to do that.
+func invokePluginWithRecovery(
+	p compliance.Plugin,
+	device *common.CommonDevice,
+	pluginName string,
+	logger *logging.Logger,
+) (findings []compliance.Finding, evaluated []string, panicked bool, runErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = true
+			if logger.IsVerbose() {
+				logger.Error("plugin panicked during RunChecks",
+					"plugin", pluginName,
+					"panic", r,
+					"stack", string(debug.Stack()),
+				)
+			} else {
+				logger.Error("plugin panicked during RunChecks",
+					"plugin", pluginName,
+					"panic", r,
+				)
+			}
+		}
+	}()
+	findings, evaluated, runErr = p.RunChecks(device)
+	return findings, evaluated, false, runErr
+}
+
+// applyFindingsToCompliance flips controls referenced by non-inventory findings
+// to false (non-compliant).
+//
+// A reference to a control absent from the map injects it as false rather than
+// being ignored, promoting an unconfirmed control to an evaluated failing one.
+// That is intentional — a finding is evidence the control failed — but it makes
+// the inventory skip load-bearing rather than cosmetic: first-party plugins do
+// not add inventory control IDs to the evaluated slice, so without the skip an
+// inventory finding's reference would be injected as a failing control the
+// plugin never actually evaluated.
+//
+// logger may be nil, in which case the diagnostics below are skipped.
+func applyFindingsToCompliance(
+	out map[string]bool,
+	findings []compliance.Finding,
+	pluginName string,
+	logger *logging.Logger,
+) {
+	for _, finding := range findings {
+		if finding.Type == constants.FindingTypeInventory {
+			// The inventory exemption is the one path that can suppress a
+			// compliance failure. Finding.Type is an unvalidated string from an
+			// arbitrary plugin, so a finding mislabeled "inventory" would exempt
+			// itself silently. A high or critical severity on an inventory
+			// finding is almost certainly that mislabel — warn rather than
+			// swallow it. The exemption still applies: this surfaces the
+			// suspicious input without letting a plugin change gate behavior.
+			if isEscalatedSeverity(finding.Severity) && logger != nil {
+				logger.Warn(
+					"inventory-typed finding carries escalated severity; compliance flip suppressed",
+					"plugin", pluginName,
+					"title", finding.Title,
+					"severity", finding.Severity,
+					"references", finding.References,
+				)
+			}
 
 			continue
 		}
 
-		// Normalize findings: derive missing Severity from control metadata
-		for i := range findings {
-			if findings[i].Severity == "" {
-				severity, err := deriveSeverityFromControl(p, findings[i])
-				if err != nil {
-					return nil, fmt.Errorf("plugin %q produced invalid finding: %w", pluginName, err)
-				}
-
-				findings[i].Severity = severity
-			}
+		if !constants.IsValidFindingType(finding.Type) && logger != nil {
+			logger.Warn(
+				"finding carries an unrecognized Type; treated as compliance-affecting",
+				"plugin", pluginName,
+				"title", finding.Title,
+				"type", finding.Type,
+			)
 		}
 
-		result.PluginFindings[pluginName] = findings
-		result.Findings = append(result.Findings, findings...)
-
-		// Track plugin information — deep-clone controls so PluginInfo
-		// consumers cannot mutate the plugin's internal state.
-		result.PluginInfo[pluginName] = PluginInfo{
-			Name:        p.Name(),
-			Version:     p.Version(),
-			Description: p.Description(),
-			Controls:    compliance.CloneControls(p.GetControls()),
-		}
-
-		// Initialize compliance tracking for this plugin.
-		// Only controls the plugin can evaluate are initialized (to true/compliant).
-		// Controls absent from the map are UNCONFIRMED — not evaluable from the
-		// available configuration data.
-		result.Compliance[pluginName] = make(map[string]bool)
-
-		evaluatedIDs := p.EvaluatedControlIDs(device)
-		for _, id := range evaluatedIDs {
-			result.Compliance[pluginName][id] = true // Default evaluated controls to compliant
-		}
-
-		// Update compliance status based on findings — flip evaluated controls to false.
-		// Inventory findings (Type: "inventory") are informational observations, not
-		// compliance failures. Their referenced controls are not in EvaluatedControlIDs
-		// and thus not in the compliance map, so the flip would be a no-op. We skip
-		// them explicitly for clarity and to guard against accidental map pollution.
-		for _, finding := range findings {
-			if finding.Type == "inventory" {
-				continue
-			}
-
-			for _, ref := range finding.References {
-				if result.Compliance[pluginName] != nil {
-					result.Compliance[pluginName][ref] = false // Non-compliant
-				}
-			}
+		for _, ref := range finding.References {
+			out[ref] = false
 		}
 	}
+}
 
-	// Calculate summary
-	result.Summary = pr.calculateSummary(result)
-
-	return result, nil
+// isEscalatedSeverity reports whether s is a severity that should never appear
+// on an informational inventory finding.
+func isEscalatedSeverity(s string) bool {
+	return s == string(analysis.SeverityCritical) || s == string(analysis.SeverityHigh)
 }
 
 // deduplicatePluginNames normalizes names to lowercase and returns a new slice
@@ -482,8 +580,14 @@ func countSeverities(findings []compliance.Finding) severityCounts {
 	return counts
 }
 
-// calculateSummary calculates compliance summary statistics.
-func (pr *PluginRegistry) calculateSummary(result *ComplianceResult) *ComplianceSummary {
+// calculateSummary calculates compliance summary statistics and returns the
+// number of findings with unrecognized severity values so the caller can
+// decide how to surface them (for example, a WARN log entry). Returning the
+// count keeps `calculateSummary` free of logger dependencies and keeps the API
+// testable.
+//
+//nolint:gocritic // unnamedResult retained; project-wide nonamedreturns disables the typical fix.
+func (pr *PluginRegistry) calculateSummary(result *ComplianceResult) (*ComplianceSummary, int) {
 	counts := countSeverities(result.Findings)
 
 	summary := &ComplianceSummary{
@@ -517,7 +621,7 @@ func (pr *PluginRegistry) calculateSummary(result *ComplianceResult) *Compliance
 		}
 	}
 
-	return summary
+	return summary, counts.unknown
 }
 
 // computePerPluginSummary calculates compliance summary statistics for a single plugin.
@@ -628,37 +732,32 @@ func (r LoadResult) Failed() int {
 	return len(r.Failures)
 }
 
-// globalRegistry holds the singleton PluginRegistry instance, and
+// globalRegistry holds the (deprecated) singleton PluginRegistry instance, and
 // globalRegistryOnce gates its one-time initialization.
+//
+// Deprecated: the global registry is retained only for backwards compatibility
+// with a small number of tests that exercise the old singleton API. Production
+// code must use NewPluginManager with an explicit *PluginRegistry (pass nil to
+// allocate a private one). Scheduled for removal in v2.0. See todo #143.
 //
 // Thread-safety guarantee: sync.Once.Do(f) guarantees that all writes
 // within f happen-before any call to Do returns (per the Go memory model,
-// https://go.dev/ref/mem#once). This means the assignment of globalRegistry
-// inside Do is visible to every goroutine that subsequently calls
+// https://go.dev/ref/mem#once). The assignment of globalRegistry inside Do
+// is therefore visible to every goroutine that subsequently calls
 // GetGlobalRegistry() without additional synchronization.
 //
-// Lifecycle: all plugin registration via RegisterGlobalPlugin() should
-// complete during sequential application startup before concurrent access
-// to the registry begins. While the internal sync.RWMutex on PluginRegistry
-// makes concurrent reads and writes safe, the intended usage pattern is
-// initialization-then-read.
-//
-// Note: this global singleton is independent of any PluginManager instance.
-// PluginManager allocates and populates its own PluginRegistry; callers that
-// need the global registry must use RegisterGlobalPlugin() explicitly.
-//
-//nolint:gochecknoglobals // Global registry for convenience functions
+//nolint:gochecknoglobals // Deprecated global registry retained for v2.0 removal.
 var (
 	globalRegistry     *PluginRegistry
 	globalRegistryOnce sync.Once
 )
 
-// GetGlobalRegistry returns the global plugin registry singleton,
-// initializing it on first access via sync.Once. It is safe to call
-// concurrently from multiple goroutines; the sync.Once guarantee ensures
-// the initialization completes and its writes are visible before any
-// caller receives the pointer. Subsequent calls return the same
-// *PluginRegistry instance without further synchronization overhead.
+// GetGlobalRegistry returns the (deprecated) global plugin registry singleton,
+// initializing it on first access via sync.Once.
+//
+// Deprecated: use NewPluginManager with an explicit *PluginRegistry (pass nil
+// to allocate a private one). The global registry is scheduled for removal in
+// v2.0. New code must not depend on this function. See todo #143.
 func GetGlobalRegistry() *PluginRegistry {
 	globalRegistryOnce.Do(func() {
 		globalRegistry = NewPluginRegistry()
@@ -666,26 +765,30 @@ func GetGlobalRegistry() *PluginRegistry {
 	return globalRegistry
 }
 
-// RegisterGlobalPlugin registers a compliance plugin with the global
-// singleton registry. All calls to RegisterGlobalPlugin should occur during
-// sequential application startup before the registry is accessed
-// concurrently for reads. While the underlying PluginRegistry.RegisterPlugin
-// is mutex-protected and technically safe to call concurrently, the
-// application's intended pattern is register-at-startup, read-during-operation.
+// RegisterGlobalPlugin registers a compliance plugin with the (deprecated)
+// global singleton registry.
 //
-// Note: PluginManager.InitializePlugins() populates the manager's own
-// PluginRegistry, not this global singleton. Callers that need plugins in the
-// global registry must call RegisterGlobalPlugin() directly.
+// Deprecated: use NewPluginManager with an explicit *PluginRegistry and call
+// RegisterPlugin on that instance directly. Scheduled for removal in v2.0.
+// See todo #143.
 func RegisterGlobalPlugin(p compliance.Plugin) error {
 	return GetGlobalRegistry().RegisterPlugin(p)
 }
 
-// GetGlobalPlugin retrieves a plugin from the global registry.
+// GetGlobalPlugin retrieves a plugin from the (deprecated) global registry.
+//
+// Deprecated: use NewPluginManager with an explicit *PluginRegistry and call
+// GetPlugin on that instance directly. Scheduled for removal in v2.0.
+// See todo #143.
 func GetGlobalPlugin(name string) (compliance.Plugin, error) {
 	return GetGlobalRegistry().GetPlugin(name)
 }
 
-// ListGlobalPlugins returns all plugins in the global registry.
+// ListGlobalPlugins returns all plugins in the (deprecated) global registry.
+//
+// Deprecated: use NewPluginManager with an explicit *PluginRegistry and call
+// ListPlugins on that instance directly. Scheduled for removal in v2.0.
+// See todo #143.
 func ListGlobalPlugins() []string {
 	return GetGlobalRegistry().ListPlugins()
 }

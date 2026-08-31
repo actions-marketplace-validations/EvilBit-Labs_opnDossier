@@ -2,9 +2,297 @@
 
 All notable changes to this project will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.7.2] - 2026-08-25
+
+### Changed
+
+- **third-party**: Update license URLs and add new font license information
+
+- **solutions**: Capture markdown-bump output-drift learning
+
+- **internal**: Remove packages outside the binary dependency closure ([#777](https://github.com/EvilBit-Labs/opnDossier/pull/777))
+
+- Add AshSgDe29071999 as a contributor for code ([#786](https://github.com/EvilBit-Labs/opnDossier/pull/786))
+
+- Update third-party license URLs to reflect new versions
+
+
+### Fixed
+
+- **schema**: Unmarshal OPNsense <bridged> elements ([#780](https://github.com/EvilBit-Labs/opnDossier/pull/780))
+
+
+## [1.7.1] - 2026-08-22
+
+### Changed
+
+- Add intigenesis as a contributor for code ([#736](https://github.com/EvilBit-Labs/opnDossier/pull/736))
+
+- **release**: Add v1.7.0 changelog and release notes ([#737](https://github.com/EvilBit-Labs/opnDossier/pull/737))
+
+- **audit**: Consolidate finding type literals into shared constants ([#738](https://github.com/EvilBit-Labs/opnDossier/pull/738))
+
+- **action**: Sweep version references to v1.7.0 ([#751](https://github.com/EvilBit-Labs/opnDossier/pull/751))
+
+- **comments**: Correct two factually wrong code comments ([#756](https://github.com/EvilBit-Labs/opnDossier/pull/756))
+
+- **user-guide**: Sweep version examples to v1.7.0 ([#761](https://github.com/EvilBit-Labs/opnDossier/pull/761))
+
+- **sanitize**: Drop the RLIMIT_FSIZE test that flakes the cmd package ([#763](https://github.com/EvilBit-Labs/opnDossier/pull/763))
+
+- Run the race detector, and stop wall-clock tests from blocking it ([#753](https://github.com/EvilBit-Labs/opnDossier/pull/753))
+
+- **release**: Prep v1.7.1 ([#775](https://github.com/EvilBit-Labs/opnDossier/pull/775))
+
+
+### Fixed
+
+- Escape config values in reports and stop sanitize destroying its input ([#749](https://github.com/EvilBit-Labs/opnDossier/pull/749))
+
+- **converter**: Normalize generated markdown to LF on all platforms ([#754](https://github.com/EvilBit-Labs/opnDossier/pull/754))
+
+- **convert**: Write one report per input for multi-file runs ([#750](https://github.com/EvilBit-Labs/opnDossier/pull/750))
+
+- **sanitizer**: Replace private IP pseudonyms with markers ([#752](https://github.com/EvilBit-Labs/opnDossier/pull/752))
+
+
+### Build
+
+- **deps**: Bump Go toolchain to 1.26.6 ([#755](https://github.com/EvilBit-Labs/opnDossier/pull/755))
+
+
+## [1.7.0] - 2026-08-10
+
+### Added
+
+- **audit**: Shared detection engine + blue-mode analysis (slice 1) ([#694](https://github.com/EvilBit-Labs/opnDossier/pull/694))
+
+- **audit**: Red audit lens — observation-driven exposure analysis (#281 slice 2) ([#695](https://github.com/EvilBit-Labs/opnDossier/pull/695))
+
+- **performance**: Add documentation on memoizing recursive graph resolution to prevent exponential output size
+
+- **audit**: Firewall rule shadowing detection ([#696](https://github.com/EvilBit-Labs/opnDossier/pull/696))
+
+- Unused named-object (alias) detection ([#710](https://github.com/EvilBit-Labs/opnDossier/pull/710))
+
+
+### Changed
+
+- **releasing**: Clarify GoReleaser publishes on tag push
+
+- **readme**: Update Pinning SHA example to v1.6.0
+
+- Remove benchmark workflow, keep benchmarks as local recipes ([#697](https://github.com/EvilBit-Labs/opnDossier/pull/697))
+
+
+### Fixed
+
+- **sanitizer**: Redact NetBird setupKey enrollment token ([#728](https://github.com/EvilBit-Labs/opnDossier/pull/728))
+
+
+## [1.6.0] - 2026-07-17
+
+### Added
+
+- Add initial strategy document outlining project goals and approach
+
+- **cmd**: Add list subcommand group (plugins, devices, formats) + goconst sweep ([#623](https://github.com/EvilBit-Labs/opnDossier/pull/623))
+
+
+### Changed
+
+- Updated changelog to reflect v1.5.0
+
+- Update RELEASE_NOTES.md for v1.5.0 release, highlighting API stability, OpenVPN key redaction, and boolean parsing improvements
+
+- Clean up project.yml by removing outdated comments and organizing language list
+
+- Add .local.yaml files to .gitignore for compound-engineering
+
+- **processor**: Remove CoreProcessor mutex serialization ([#598](https://github.com/EvilBit-Labs/opnDossier/pull/598))
+
+- **mergify**: Upgrade configuration to current format ([#599](https://github.com/EvilBit-Labs/opnDossier/pull/599))
+
+- **converter**: NATS-36 add NAT-heavy conversion benchmarks ([#601](https://github.com/EvilBit-Labs/opnDossier/pull/601))
+
+- **conventions**: Add PR body and commit message content standard ([#603](https://github.com/EvilBit-Labs/opnDossier/pull/603))
+
+- **converter**: NATS-38 cut firewall-row allocations 41% via formatter and converter idioms ([#604](https://github.com/EvilBit-Labs/opnDossier/pull/604))
+
+- **mergify**: Drop codecov/patch from merge gate ([#605](https://github.com/EvilBit-Labs/opnDossier/pull/605))
+
+- **converter**: NATS-37 memoize statistics and analysis for multi-format exports ([#608](https://github.com/EvilBit-Labs/opnDossier/pull/608))
+
+- **gotchas**: Add note on gocognit threshold adjustment for cognitive complexity
+
+- **bench**: Add export/display/validator benchmarks and startup budget gate
+
+- **serena**: Restore inline config documentation in project.yml
+
+- Remove .gitignore for .agents/skills
+
+- Update versions for JetBrains/go-modern-guidelines and Jeffallan/claude-skills
+
+- Add _update-mise to update-deps for improved dependency management
+
+- Refine README phrasing for offline operation and static binary
+
+- Configure Claude AI plugins and update gitignore
+
+- Remove tessl integration ([#665](https://github.com/EvilBit-Labs/opnDossier/pull/665))
+
+- Deduplicate SNMP ServiceDetails redaction + close SNMPv3 enckey sanitizer leak (NATS-163) ([#667](https://github.com/EvilBit-Labs/opnDossier/pull/667))
+
+- Modernize issue templates, add SUPPORT.md and FUNDING.yml ([#676](https://github.com/EvilBit-Labs/opnDossier/pull/676))
+
+- Bump Go toolchain to 1.26.5 for GO-2026-5856 ([#683](https://github.com/EvilBit-Labs/opnDossier/pull/683))
+
+- **release**: Prepare v1.6.0
+
+
+### Fixed
+
+- **ci**: Fix govulncheck crash, remediate stdlib CVEs, unblock Dependabot coverage ([#656](https://github.com/EvilBit-Labs/opnDossier/pull/656))
+
+
+## [1.5.0] - 2026-04-21
+
+### Added
+
+- **schema**: NATS-3 audit and harden public API surface for cross-repo consumption ([#569](https://github.com/EvilBit-Labs/opnDossier/pull/569))
+
+- **schema**: Parse OPNsense Unbound MVC and flip FIREWALL-007 polarity - NATS-77 ([#571](https://github.com/EvilBit-Labs/opnDossier/pull/571))
+
+- **parser**: Audit and harden public API surface - NATS-144 ([#575](https://github.com/EvilBit-Labs/opnDossier/pull/575))
+
+
+### Changed
+
+- **mergify**: Upgrade configuration to current format ([#543](https://github.com/EvilBit-Labs/opnDossier/pull/543))
+
+- Update labeling instructions and configuration settings in .coderabbit.yaml
+
+- Add OPNsense/pfSense XML data structure research ([#547](https://github.com/EvilBit-Labs/opnDossier/pull/547))
+
+- **NATS-6**: Remove template system dead code for v2.0 ([#550](https://github.com/EvilBit-Labs/opnDossier/pull/550))
+
+- Address CodeRabbit feedback from PR #550 ([#552](https://github.com/EvilBit-Labs/opnDossier/pull/552))
+
+- **NATS-7**: Replace O(n²) duplicate rule detection with hash buckets ([#554](https://github.com/EvilBit-Labs/opnDossier/pull/554))
+
+- **NATS-6**: Clean up residuals after template system removal ([#556](https://github.com/EvilBit-Labs/opnDossier/pull/556))
+
+- Add Jira as primary task tracker to Rules of Engagement
+
+- Update heading level for Agent Rules and remove unused dependency from tessl.json
+
+- **pkg**: Audit converters and ConversionWarning API — NATS-145 ([#580](https://github.com/EvilBit-Labs/opnDossier/pull/580))
+
+- **api**: Document public pkg/ consumer contract - NATS-146
+
+- **tooling**: Phase 1 — infrastructure and pre-commit quality gates ([#583](https://github.com/EvilBit-Labs/opnDossier/pull/583))
+
+- **security,deps,docs**: Phase 2 round 1 — security workflow, deps audit, pre-push hook
+
+- **ci,release,docs**: Phase 2 round 2 — CI matrix, coverage gate, docker snapshot, action pin
+
+- Dosu updates for PR #584
+
+- **pre-commit**: Format adjustments and cleanup in configuration
+
+- **mise**: Update tool versions and add govulncheck
+
+- **ci,docs**: Address Phase 2 review feedback
+
+- **setup**: Update dependency management to include mise update step
+
+- **mise**: Update _mise-update to use --local flag for upgrades
+
+- **docs**: Update contributing guide to clarify pre-commit and pre-push hook usage
+
+- **docs**: Update contributing guide to clarify pre-commit and pre-push hook usage
+
+- **docs**: Update enforcement details for race condition testing in GOTCHAS.md
+
+- **ci**: Simplify test conditions in CI configuration
+
+- **docs**: Update Go version support details in README, CONTRIBUTING, and SECURITY files
+
+- **docs**: Update Go support policy to include future versioning notes
+
+- **ci,docs**: Drop CodeQL job from security.yml
+
+- **docs**: Clarify pre-push hook policy and security vulnerability reporting in CONTRIBUTING.md
+
+- **docs**: Enhance security policy formatting for vulnerability reporting clarity
+
+- **docs**: Update API documentation formatting for clarity and consistency
+
+- **docs**: Update note formatting for validate-command-only flag in API reference
+
+- **docs**: Enhance note formatting for SLSA provenance and commit message guidelines
+
+- **docs**: Enhance note formatting for advisory IPv6 check in firewall security controls reference
+
+- **readme**: Remove stale pre-push hook guidance
+
+- **docs**: Update README for clarity and remove outdated git hook instructions
+
+- **dev-guide**: Sync Go Support Policy with current CI
+
+- Phase 3 batch 1 — doc consolidation, Cobra help, changelog, architecture split
+
+- Phase 3 batch 2 — secret inventory, api regime, scanner sweep
+
+- **security**: Phase 3 batch 3 — security-issue handling note
+
+- Address Phase 3 review feedback
+
+- Address PR review aggregate feedback
+
+- Address CodeRabbit review findings
+
+- Second-round PR feedback — accuracy, cleanup, consistency
+
+- Third-round PR feedback — help text + cross-file accuracy
+
+- **pkg/model,pkg/parser**: Phase 4 round 1 — public API renames before v1.5 lock
+
+- **pkg/parser**: Phase 4 round 2 — API shape assertions + snapshot fixtures
+
+- Dosu updates for PR #586
+
+- **pkg/model,docs**: Phase 4 review feedback — v1.5 lockdown fixups
+
+- Phase 4 review round 2 — remove dev-guide mirrors, revert arch TOC
+
+- **changelog**: Add PR #586 links to Phase 4 API entries (CR)
+
+- Update CHANGELOG.md with recent changes and enhancements
+
+- Fix two doc-consistency issues from PR review
+
+- Compliance perf, pfSense parity, quality cleanup ([#588](https://github.com/EvilBit-Labs/opnDossier/pull/588))
+
+
+### Security
+
+- OpenVPN sanitizer redaction, pfSense validator atomicity, plugin loader preflight ([#587](https://github.com/EvilBit-Labs/opnDossier/pull/587))
+
+
+### Fixed
+
+- **firewall,schema**: Post-merge review feedback on NATS-77 (PR #571) ([#573](https://github.com/EvilBit-Labs/opnDossier/pull/573))
+
+- **parser**: Liberal boolean parsing for OPNsense config.xml ([#558](https://github.com/EvilBit-Labs/opnDossier/pull/558)) ([#577](https://github.com/EvilBit-Labs/opnDossier/pull/577))
+
+
 ## [1.4.0] - 2026-04-03
 
-### Features
+### Added
 
 - **parser**: Add IPsec parsing support for pfSense configurations ([#476](https://github.com/EvilBit-Labs/opnDossier/pull/476))
 
@@ -15,7 +303,24 @@ All notable changes to this project will be documented in this file.
 - Add basic `Dockerfile` and `action.yaml` ([#521](https://github.com/EvilBit-Labs/opnDossier/pull/521))
 
 
-### Bug Fixes
+### Changed
+
+- **repo**: Untrack local AI tooling configs from version control
+
+- Update CONTRIBUTING.md and development standards
+
+- Add all-contributors recognition ([#530](https://github.com/EvilBit-Labs/opnDossier/pull/530))
+
+- Add KryptoKat08 as a contributor for security ([#534](https://github.com/EvilBit-Labs/opnDossier/pull/534))
+
+- Add quick release checklist to RELEASING.md
+
+- Update CHANGELOG for version 1.4.0 with new features, bug fixes, and documentation updates
+
+- Add release notes for version 1.4.0 detailing new features and improvements
+
+
+### Fixed
 
 - **release**: Fix universal binary, man pages, and release footer ([#477](https://github.com/EvilBit-Labs/opnDossier/pull/477))
 
@@ -36,23 +341,9 @@ All notable changes to this project will be documented in this file.
 - Update versions for Jeffallan/claude-skills and mcollina/skills dependencies
 
 
-### Documentation
-
-- Update CONTRIBUTING.md and development standards
-
-- Add all-contributors recognition ([#530](https://github.com/EvilBit-Labs/opnDossier/pull/530))
-
-- Add KryptoKat08 as a contributor for security ([#534](https://github.com/EvilBit-Labs/opnDossier/pull/534))
-
-
-### Miscellaneous Tasks
-
-- **repo**: Untrack local AI tooling configs from version control
-
-
 ## [1.3.0] - 2026-03-23
 
-### Features
+### Added
 
 - **audit**: Implement dynamic logging levels for audit mode ([#257](https://github.com/EvilBit-Labs/opnDossier/pull/257))
 
@@ -81,7 +372,79 @@ All notable changes to this project will be documented in this file.
 - **parser**: Add pfSense configuration parser with multi-device abstraction ([#459](https://github.com/EvilBit-Labs/opnDossier/pull/459))
 
 
-### Bug Fixes
+### Changed
+
+- **Mergify**: Configuration update ([#259](https://github.com/EvilBit-Labs/opnDossier/pull/259))
+
+- Fix inaccurate content across MkDocs site ([#267](https://github.com/EvilBit-Labs/opnDossier/pull/267))
+
+- **model**: Address tech debt across model, enrichment, display, and logging ([#269](https://github.com/EvilBit-Labs/opnDossier/pull/269))
+
+- **model**: Multi-device model layer with CommonDevice and ParserFactory ([#273](https://github.com/EvilBit-Labs/opnDossier/pull/273))
+
+- Harden multi-device model, fix bugs, and remove CIS trademark references ([#274](https://github.com/EvilBit-Labs/opnDossier/pull/274))
+
+- **ci**: Various minor improvements to mergify configs, documentation, mise settings, and AGENTS.md rules ([#348](https://github.com/EvilBit-Labs/opnDossier/pull/348))
+
+- Updates for PR #348 ([#349](https://github.com/EvilBit-Labs/opnDossier/pull/349))
+
+- Rewrite data-model docs for CommonDevice export model ([#355](https://github.com/EvilBit-Labs/opnDossier/pull/355))
+
+- Add comprehensive requirements document for opnDossier CLI tool ([#371](https://github.com/EvilBit-Labs/opnDossier/pull/371))
+
+- Add plugin development guide and API reference ([#377](https://github.com/EvilBit-Labs/opnDossier/pull/377))
+
+- **user-guide**: Restructure commands documentation ([#381](https://github.com/EvilBit-Labs/opnDossier/pull/381))
+
+- **audit**: Document thread-safety guarantees for global PluginRegistry ([#290](https://github.com/EvilBit-Labs/opnDossier/pull/290)) ([#384](https://github.com/EvilBit-Labs/opnDossier/pull/384))
+
+- Unify finding types across compliance processor and audit packages to eliminate duplication ([#391](https://github.com/EvilBit-Labs/opnDossier/pull/391))
+
+- Add plugin development guide and update API/architecture docs ([#393](https://github.com/EvilBit-Labs/opnDossier/pull/393))
+
+- **audit**: Move audit report rendering from cmd to converter/builder layer ([#400](https://github.com/EvilBit-Labs/opnDossier/pull/400))
+
+- Add comprehensive system architecture documentation ([#402](https://github.com/EvilBit-Labs/opnDossier/pull/402))
+
+- Expand contributing guide with architecture and governance ([#406](https://github.com/EvilBit-Labs/opnDossier/pull/406))
+
+- **docs**: Update AGENTS.md and add pkg-internal-import-boundary… ([#408](https://github.com/EvilBit-Labs/opnDossier/pull/408))
+
+- **analysis**: Extract shared analysis package to eliminate enrichment mirror ([#409](https://github.com/EvilBit-Labs/opnDossier/pull/409))
+
+- **agents**: Fix translateCommonStats path after report.go split
+
+- **processor**: Split report.go into focused files ([#415](https://github.com/EvilBit-Labs/opnDossier/pull/415))
+
+- **validator**: Split opnsense.go into domain specific files ([#417](https://github.com/EvilBit-Labs/opnDossier/pull/417))
+
+- **builder**: Split builder.go into domain-specific files ([#419](https://github.com/EvilBit-Labs/opnDossier/pull/419))
+
+- **builder**: Split ReportBuilder interface into focused interfaces ([#431](https://github.com/EvilBit-Labs/opnDossier/pull/431))
+
+- **converter**: Introduce FormatRegistry to centralize format dispatch ([#434](https://github.com/EvilBit-Labs/opnDossier/pull/434))
+
+- **contributing**: Sync CONTRIBUTING.md with AGENTS.md coverage ([#440](https://github.com/EvilBit-Labs/opnDossier/pull/440))
+
+- **model**: Improve type safety with enums for firewall rules, NAT, and DHCP ([#452](https://github.com/EvilBit-Labs/opnDossier/pull/452))
+
+- **changelog**: Update changelog with new features, bug fixes, and refactors
+
+- **gotchas**: Add guidelines for git tagging after squash-merge commits
+
+- **audit**: Remove standard mode — duplicates convert with no audit value ([#465](https://github.com/EvilBit-Labs/opnDossier/pull/465))
+
+- Comprehensively restructure README and add Copilot guidance ([#467](https://github.com/EvilBit-Labs/opnDossier/pull/467))
+
+- Add comprehensive security assurance case document ([#471](https://github.com/EvilBit-Labs/opnDossier/pull/471))
+
+
+### Security
+
+- Overhaul SECURITY.md and add fuzz tests ([#252](https://github.com/EvilBit-Labs/opnDossier/pull/252))
+
+
+### Fixed
 
 - **builder**: Add Dest Port column and fix Any field handling ([#253](https://github.com/EvilBit-Labs/opnDossier/pull/253)) ([#254](https://github.com/EvilBit-Labs/opnDossier/pull/254))
 
@@ -120,87 +483,9 @@ All notable changes to this project will be documented in this file.
 - **release**: Include shell completions in archive tarballs
 
 
-### Refactor
-
-- **model**: Address tech debt across model, enrichment, display, and logging ([#269](https://github.com/EvilBit-Labs/opnDossier/pull/269))
-
-- **model**: Multi-device model layer with CommonDevice and ParserFactory ([#273](https://github.com/EvilBit-Labs/opnDossier/pull/273))
-
-- Harden multi-device model, fix bugs, and remove CIS trademark references ([#274](https://github.com/EvilBit-Labs/opnDossier/pull/274))
-
-- Unify finding types across compliance processor and audit packages to eliminate duplication ([#391](https://github.com/EvilBit-Labs/opnDossier/pull/391))
-
-- **audit**: Move audit report rendering from cmd to converter/builder layer ([#400](https://github.com/EvilBit-Labs/opnDossier/pull/400))
-
-- **docs**: Update AGENTS.md and add pkg-internal-import-boundary… ([#408](https://github.com/EvilBit-Labs/opnDossier/pull/408))
-
-- **analysis**: Extract shared analysis package to eliminate enrichment mirror ([#409](https://github.com/EvilBit-Labs/opnDossier/pull/409))
-
-- **processor**: Split report.go into focused files ([#415](https://github.com/EvilBit-Labs/opnDossier/pull/415))
-
-- **validator**: Split opnsense.go into domain specific files ([#417](https://github.com/EvilBit-Labs/opnDossier/pull/417))
-
-- **builder**: Split builder.go into domain-specific files ([#419](https://github.com/EvilBit-Labs/opnDossier/pull/419))
-
-- **builder**: Split ReportBuilder interface into focused interfaces ([#431](https://github.com/EvilBit-Labs/opnDossier/pull/431))
-
-- **converter**: Introduce FormatRegistry to centralize format dispatch ([#434](https://github.com/EvilBit-Labs/opnDossier/pull/434))
-
-- **model**: Improve type safety with enums for firewall rules, NAT, and DHCP ([#452](https://github.com/EvilBit-Labs/opnDossier/pull/452))
-
-- **audit**: Remove standard mode — duplicates convert with no audit value ([#465](https://github.com/EvilBit-Labs/opnDossier/pull/465))
-
-
-### Documentation
-
-- Fix inaccurate content across MkDocs site ([#267](https://github.com/EvilBit-Labs/opnDossier/pull/267))
-
-- Updates for PR #348 ([#349](https://github.com/EvilBit-Labs/opnDossier/pull/349))
-
-- Rewrite data-model docs for CommonDevice export model ([#355](https://github.com/EvilBit-Labs/opnDossier/pull/355))
-
-- Add comprehensive requirements document for opnDossier CLI tool ([#371](https://github.com/EvilBit-Labs/opnDossier/pull/371))
-
-- Add plugin development guide and API reference ([#377](https://github.com/EvilBit-Labs/opnDossier/pull/377))
-
-- **user-guide**: Restructure commands documentation ([#381](https://github.com/EvilBit-Labs/opnDossier/pull/381))
-
-- **audit**: Document thread-safety guarantees for global PluginRegistry ([#290](https://github.com/EvilBit-Labs/opnDossier/pull/290)) ([#384](https://github.com/EvilBit-Labs/opnDossier/pull/384))
-
-- Add plugin development guide and update API/architecture docs ([#393](https://github.com/EvilBit-Labs/opnDossier/pull/393))
-
-- Add comprehensive system architecture documentation ([#402](https://github.com/EvilBit-Labs/opnDossier/pull/402))
-
-- Expand contributing guide with architecture and governance ([#406](https://github.com/EvilBit-Labs/opnDossier/pull/406))
-
-- **agents**: Fix translateCommonStats path after report.go split
-
-- **contributing**: Sync CONTRIBUTING.md with AGENTS.md coverage ([#440](https://github.com/EvilBit-Labs/opnDossier/pull/440))
-
-- **gotchas**: Add guidelines for git tagging after squash-merge commits
-
-- Comprehensively restructure README and add Copilot guidance ([#467](https://github.com/EvilBit-Labs/opnDossier/pull/467))
-
-- Add comprehensive security assurance case document ([#471](https://github.com/EvilBit-Labs/opnDossier/pull/471))
-
-
-### Miscellaneous Tasks
-
-- **Mergify**: Configuration update ([#259](https://github.com/EvilBit-Labs/opnDossier/pull/259))
-
-- **ci**: Various minor improvements to mergify configs, documentation, mise settings, and AGENTS.md rules ([#348](https://github.com/EvilBit-Labs/opnDossier/pull/348))
-
-- **changelog**: Update changelog with new features, bug fixes, and refactors
-
-
-### Security
-
-- Overhaul SECURITY.md and add fuzz tests ([#252](https://github.com/EvilBit-Labs/opnDossier/pull/252))
-
-
 ## [1.2.2] - 2026-02-12
 
-### Features
+### Added
 
 - **security**: Add security policy documentation  
 
@@ -363,7 +648,225 @@ All notable changes to this project will be documented in this file.
 - **diff**: Add HTML formatter, side-by-side mode, analyzers, and security scoring ([#245](https://github.com/EvilBit-Labs/opnDossier/pull/245))
 
 
-### Bug Fixes
+### Changed
+
+- **ci**: Refactor CI configuration and enhance testing workflow
+
+- **ci**: Add golangci-lint setup to CI workflow
+
+- **justfile**: Add full-checks command to streamline CI process
+
+- **workflow**: Remove summary workflow for issue summarization
+
+- **ci**: Simplify Go version matrix in CI workflow
+
+- **workflow**: Remove summary workflow for issue summarization
+
+- **ci**: Simplify Go version matrix in CI workflow
+
+- Add MIGRATION IN-PROGRESS notice to README.md
+
+- Update compliance and project documentation for opnDossier
+
+- Rename project from opnFocus to opnDossier and update documentation
+
+- Update documentation to reflect project name change to opnDossier
+
+- Update project references and configurations for opnDossier
+
+- Update documentation and configuration for opnDossier
+
+- Update report templates to reflect project name change to opnDossier
+
+- Rename project references from opnFocus to opnDossier
+
+- Add CI and CodeQL badges to README.md
+
+- Add CodeRabbit Pull Request Reviews badge to README.md
+
+- Update .gitignore and justfile for improved coverage reporting
+
+- Update CI workflow and justfile for testing improvements
+
+- Update CI workflow to run tests across all packages
+
+- Update release workflow to include main branch
+
+- Remove JSON and YAML template files and update related functionality
+
+- Simplify opnsense-config XSD schema by removing deprecated elements
+
+- Update .coderabbit.yaml configuration
+
+- Update CI configuration and enable GitHub checks
+
+- Fix changelog format for v1.0.0 release
+
+- Finalize changelog for v1.0.0 release
+
+- Format changelog for v1.0.0 release
+
+- Update changelog generation process
+
+- Enhance GitHub Copilot instructions and project overview
+
+- Clean up formatting in copilot instructions
+
+- **docs**: Update GitHub Copilot instructions for clarity
+
+- **docs**: Add guidelines for project structure, Go development, and plugin architecture
+
+- **docs**: Update copilot and project guidelines for clarity
+
+- **processor**: Simplify interface check and add context cancellation handling
+
+- **converter**: Update firewall rules table to include IP version
+
+- **roadmap**: Add v2.0 roadmap outlining major changes
+
+- Remove FOSSA configuration files and workflows as part of project cleanup
+
+- Remove Snyk workflow from GitHub Actions
+
+- Remove Snyk workflow from GitHub Actions
+
+- Remove team entry from FOSSA configuration
+
+- Enhance justfile with dependency update targets
+
+- Update README badges for improved visibility
+
+- Add project description to core-concepts.mdc
+
+- **config**: Update .coderabbit.yaml for improved formatting and timeout settings
+
+- **rules**: Reorganize and update Cursor rules for clarity and consistency
+
+- **copilot**: Expand GitHub Copilot instructions and project guidelines
+
+- **agents**: Expand documentation on brand principles and CI/CD integration standards
+
+- **config**: Update .coderabbit.yaml for enhanced CLI usability and documentation
+
+- **template**: Fix markdown formatting in template function migration guide
+
+- Fix markdown formatting in security-scoring.md
+
+- **coverage**: Improve test coverage to address Codecov requirements
+
+- Complete programmatic markdown generation documentation
+
+- Enhance GitHub Copilot instructions with structured logging and error handling guidelines
+
+- Streamline logging configuration and remove deprecated methods
+
+- Update migration guide and template function mapping
+
+- Update documentation and improve formatting
+
+- Update .mdformat.toml to include additional exclusions
+
+- Update actionlint version to v1.7.10
+
+- Add prompts for Continuous Integration Check and Simplicity Review
+
+- Update code structure for better readability
+
+- Remove requirements management document
+
+- Update CI workflow for improved dependency management
+
+- Refactor justfile for improved organization
+
+- Update CI workflow for improved linting and testing
+
+- Update golangci-lint version to v2.8
+
+- Update model version in CI check prompt
+
+- Update formatting and error handling in CONTRIBUTING.md
+
+- Update code block formatting in AGENTS.md
+
+- Improve formatting of user stories in documentation
+
+- Enhance error handling and improve code clarity
+
+- Consolidate role definition formatting in documentation
+
+- Remove gomod dependency updates from config
+
+- Fix formatting inconsistencies in documentation
+
+- Fix numbering format in AI agent practices
+
+- Improve formatting and clarity in compliance guide
+
+- Improve formatting and readability in README.md
+
+- Remove CodeQL workflow configuration
+
+- Update migration guides for template support removal
+
+- Add .gitignore and project.yml for configuration
+
+- Enhance error handling and warning messages in migration script
+
+- Update .coderabbit.yaml with schema and formatting fixes
+
+- Replace custom contains function with slices.Contains
+
+- Add Charmbracelet ecosystem compatibility research
+
+- Add initial vale configuration file
+
+- Update .gitignore to include coverage and test files
+
+- Remove bash from supported languages list
+
+- Update line ending normalization with logging support
+
+- Migrate to mise for tool management and CI updates ([#172](https://github.com/EvilBit-Labs/opnDossier/pull/172))
+
+- **devcontainer**: Add nonFreePackages and claude-code feature
+
+- **docs**: Update audit and compliance documentation
+
+- Simplify mapTemplateName and fix help text indentation
+
+- Fix indentation in convert command examples
+
+- Update Go and tool versions in mise.toml
+
+- Refactor markdown generation to use converter package ([#183](https://github.com/EvilBit-Labs/opnDossier/pull/183))
+
+- **config**: Gitignore .claude/settings.local.json
+
+- **model**: Split model package into schema and enrichment ([#144](https://github.com/EvilBit-Labs/opnDossier/pull/144)) ([#186](https://github.com/EvilBit-Labs/opnDossier/pull/186))
+
+- Remove template references and add modular report architecture ([#187](https://github.com/EvilBit-Labs/opnDossier/pull/187))
+
+- **converter**: Verify NAT interface hyperlinks ([#217](https://github.com/EvilBit-Labs/opnDossier/pull/217))
+
+- Bump dependencies ci: update GitHub Actions to newer versions ([#220](https://github.com/EvilBit-Labs/opnDossier/pull/220))
+
+- **builder**: Leverage markdown library methods to reduce code verbosity ([#222](https://github.com/EvilBit-Labs/opnDossier/pull/222))
+
+- Update release workflow and dependencies ([#226](https://github.com/EvilBit-Labs/opnDossier/pull/226))
+
+- **ci**: Replace mise with vendor actions in release workflow
+
+- Add Contributor Covenant Code of Conduct ([#236](https://github.com/EvilBit-Labs/opnDossier/pull/236))
+
+- **go**: Add doc comments to all exported symbols for 100% coverage ([#241](https://github.com/EvilBit-Labs/opnDossier/pull/241))
+
+
+### Security
+
+- **security**: Pin GitHub Actions to SHA commits ([#240](https://github.com/EvilBit-Labs/opnDossier/pull/240))
+
+
+### Fixed
 
 - **display**: Remove validation from display command by default
 
@@ -460,239 +963,9 @@ All notable changes to this project will be documented in this file.
 - **release**: Disable GPG signing until secrets are configured
 
 
-### Refactor
-
-- Remove JSON and YAML template files and update related functionality
-
-- Simplify opnsense-config XSD schema by removing deprecated elements
-
-- **processor**: Simplify interface check and add context cancellation handling
-
-- Streamline logging configuration and remove deprecated methods
-
-- Replace custom contains function with slices.Contains
-
-- Simplify mapTemplateName and fix help text indentation
-
-- **model**: Split model package into schema and enrichment ([#144](https://github.com/EvilBit-Labs/opnDossier/pull/144)) ([#186](https://github.com/EvilBit-Labs/opnDossier/pull/186))
-
-- **builder**: Leverage markdown library methods to reduce code verbosity ([#222](https://github.com/EvilBit-Labs/opnDossier/pull/222))
-
-- **ci**: Replace mise with vendor actions in release workflow
-
-
-### Documentation
-
-- Fix changelog format for v1.0.0 release
-
-- Finalize changelog for v1.0.0 release
-
-- Format changelog for v1.0.0 release
-
-- Enhance GitHub Copilot instructions and project overview
-
-- Add project description to core-concepts.mdc
-
-- **copilot**: Expand GitHub Copilot instructions and project guidelines
-
-- **agents**: Expand documentation on brand principles and CI/CD integration standards
-
-- **template**: Fix markdown formatting in template function migration guide
-
-- Complete programmatic markdown generation documentation
-
-- Enhance GitHub Copilot instructions with structured logging and error handling guidelines
-
-- Update migration guide and template function mapping
-
-- Remove template references and add modular report architecture ([#187](https://github.com/EvilBit-Labs/opnDossier/pull/187))
-
-- Add Contributor Covenant Code of Conduct ([#236](https://github.com/EvilBit-Labs/opnDossier/pull/236))
-
-- **go**: Add doc comments to all exported symbols for 100% coverage ([#241](https://github.com/EvilBit-Labs/opnDossier/pull/241))
-
-
-### Styling
-
-- Fix markdown formatting in security-scoring.md
-
-
-### Testing
-
-- **coverage**: Improve test coverage to address Codecov requirements
-
-- **converter**: Verify NAT interface hyperlinks ([#217](https://github.com/EvilBit-Labs/opnDossier/pull/217))
-
-
-### Miscellaneous Tasks
-
-- **ci**: Refactor CI configuration and enhance testing workflow
-
-- **ci**: Add golangci-lint setup to CI workflow
-
-- **justfile**: Add full-checks command to streamline CI process
-
-- **workflow**: Remove summary workflow for issue summarization
-
-- **ci**: Simplify Go version matrix in CI workflow
-
-- **workflow**: Remove summary workflow for issue summarization
-
-- **ci**: Simplify Go version matrix in CI workflow
-
-- Add MIGRATION IN-PROGRESS notice to README.md
-
-- Update compliance and project documentation for opnDossier
-
-- Rename project from opnFocus to opnDossier and update documentation
-
-- Update documentation to reflect project name change to opnDossier
-
-- Update project references and configurations for opnDossier
-
-- Update documentation and configuration for opnDossier
-
-- Update report templates to reflect project name change to opnDossier
-
-- Rename project references from opnFocus to opnDossier
-
-- Add CI and CodeQL badges to README.md
-
-- Add CodeRabbit Pull Request Reviews badge to README.md
-
-- Update .gitignore and justfile for improved coverage reporting
-
-- Update CI workflow and justfile for testing improvements
-
-- Update CI workflow to run tests across all packages
-
-- Update release workflow to include main branch
-
-- Update .coderabbit.yaml configuration
-
-- Update CI configuration and enable GitHub checks
-
-- Update changelog generation process
-
-- Clean up formatting in copilot instructions
-
-- **docs**: Update GitHub Copilot instructions for clarity
-
-- **docs**: Add guidelines for project structure, Go development, and plugin architecture
-
-- **docs**: Update copilot and project guidelines for clarity
-
-- **converter**: Update firewall rules table to include IP version
-
-- **roadmap**: Add v2.0 roadmap outlining major changes
-
-- Remove FOSSA configuration files and workflows as part of project cleanup
-
-- Remove Snyk workflow from GitHub Actions
-
-- Remove Snyk workflow from GitHub Actions
-
-- Remove team entry from FOSSA configuration
-
-- Enhance justfile with dependency update targets
-
-- Update README badges for improved visibility
-
-- **config**: Update .coderabbit.yaml for improved formatting and timeout settings
-
-- **rules**: Reorganize and update Cursor rules for clarity and consistency
-
-- **config**: Update .coderabbit.yaml for enhanced CLI usability and documentation
-
-- Update documentation and improve formatting
-
-- Update .mdformat.toml to include additional exclusions
-
-- Update actionlint version to v1.7.10
-
-- Add prompts for Continuous Integration Check and Simplicity Review
-
-- Update code structure for better readability
-
-- Remove requirements management document
-
-- Update CI workflow for improved dependency management
-
-- Refactor justfile for improved organization
-
-- Update CI workflow for improved linting and testing
-
-- Update golangci-lint version to v2.8
-
-- Update model version in CI check prompt
-
-- Update formatting and error handling in CONTRIBUTING.md
-
-- Update code block formatting in AGENTS.md
-
-- Improve formatting of user stories in documentation
-
-- Enhance error handling and improve code clarity
-
-- Consolidate role definition formatting in documentation
-
-- Remove gomod dependency updates from config
-
-- Fix formatting inconsistencies in documentation
-
-- Fix numbering format in AI agent practices
-
-- Improve formatting and clarity in compliance guide
-
-- Improve formatting and readability in README.md
-
-- Remove CodeQL workflow configuration
-
-- Update migration guides for template support removal
-
-- Add .gitignore and project.yml for configuration
-
-- Enhance error handling and warning messages in migration script
-
-- Update .coderabbit.yaml with schema and formatting fixes
-
-- Add Charmbracelet ecosystem compatibility research
-
-- Add initial vale configuration file
-
-- Update .gitignore to include coverage and test files
-
-- Remove bash from supported languages list
-
-- Update line ending normalization with logging support
-
-- Migrate to mise for tool management and CI updates ([#172](https://github.com/EvilBit-Labs/opnDossier/pull/172))
-
-- **devcontainer**: Add nonFreePackages and claude-code feature
-
-- **docs**: Update audit and compliance documentation
-
-- Fix indentation in convert command examples
-
-- Update Go and tool versions in mise.toml
-
-- Refactor markdown generation to use converter package ([#183](https://github.com/EvilBit-Labs/opnDossier/pull/183))
-
-- **config**: Gitignore .claude/settings.local.json
-
-- Bump dependencies ci: update GitHub Actions to newer versions ([#220](https://github.com/EvilBit-Labs/opnDossier/pull/220))
-
-- Update release workflow and dependencies ([#226](https://github.com/EvilBit-Labs/opnDossier/pull/226))
-
-
-### Security
-
-- **security**: Pin GitHub Actions to SHA commits ([#240](https://github.com/EvilBit-Labs/opnDossier/pull/240))
-
-
 ## [1.0.0-rc1] - 2025-08-01
 
-### Features
+### Added
 
 - Enhance XMLParser with security features and input size limit
 
@@ -833,49 +1106,7 @@ All notable changes to this project will be documented in this file.
 - **release**: Enable automated release process on tag pushes
 
 
-### Bug Fixes
-
-- Format markdown files to pass pre-commit checks
-
-- **logging**: Update logging output and enhance Kubernetes configuration documentation
-
-- **requirements**: Update gofmt reference to golangci-lint
-
-- **docs**: Correct formatting and content in AGENTS.md, DEVELOPMENT_STANDARDS.md, and README.md
-
-- **tests**: Align indentation in completeness_test.go for consistency
-
-- **tests**: Update display tests to use context for improved handling
-
-- **docs**: Update plugin architecture and firewall reference documentation
-
-- Resolve remaining testifylint issues
-
-- **cli**: Update command flag requirements and task status
-
-
-### Refactor
-
-- Update struct field names in opnsense model for consistency
-
-- **display**: Streamline command definitions and enhance terminal display handling
-
-- Update docstrings for clarity and consistency across multiple files
-
-- **display**: Update terminal display initialization to use options
-
-- **tests**: Simplify command retrieval in convert tests
-
-- **tests**: Replace inline structs with configuration types in OPNsense tests
-
-- **display**: Replace theme string literals with constants in display package
-
-- **markdown**: Optimize configuration content detection in formatters
-
-- **processor**: Enhance CoreProcessor initialization and improve MDNode documentation
-
-
-### Documentation
+### Changed
 
 - Add project configuration files and documentation for OPNsense CLI tool
 
@@ -885,61 +1116,19 @@ All notable changes to this project will be documented in this file.
 
 - Update project documentation and structure for opnFocus
 
-- Update documentation and formatting for opnFocus
-
-- Standardize configuration formatting and update documentation
-
-- **tasks**: Mark TASK-004 and TASK-005 as completed ([#4](https://github.com/EvilBit-Labs/opnDossier/pull/4))
-
-- **CONTRIBUTING**: Add comprehensive contributing guide
-
-- Add comprehensive Copilot instructions for opnFocus project
-
-- **validator**: Clean up comment formatting in `demo.go`
-
-- **CONTRIBUTING**: Standardize commit message formatting in guidelines
-
-- **validator**: Add package-level comments to `opnsense.go`
-
-- Update requirements and user stories documents to include Table of Contents
-
-- **requirements**: Clarify report generation modes and template usage
-
-- Update mapping table with issue #26 for Phase 4.3 tasks (TASK-023–TASK-029)
-
-- Update AGENTS.md and add migration.md for project transition
-
-- **migration**: Enhance migration.md with detailed steps for repository transition
-
-- **configuration**: Improve JSON formatting in configuration.md for clarity
-
-- **migration**: Expand migration.md with detailed commands for repository transition
-
-- **tasks**: Reorganize input validation task in project_spec/tasks.md
-
-- **tasks**: Mark TASK-024 as complete for multi-mode report controller
-
-
-### Testing
-
-- **tests**: Remove module_files_test.go due to redundancy
-
-- **tests**: Remove markdown_spec_test.go due to redundancy
-
-- **errors**: Add unit tests for AggregatedValidationError functionality
-
-
-### Miscellaneous Tasks
-
 - Update golangci-lint configuration and justfile for opnFocus
 
 - Update golangci-lint settings and enhance justfile for opnFocus
+
+- Update documentation and formatting for opnFocus
 
 - Update dependencies and refactor opnFocus CLI structure
 
 - Update module path in go.mod for opnFocus
 
 - Update import paths to use the new module structure
+
+- Update struct field names in opnsense model for consistency
 
 - Update .gitignore and refactor justfile for environment setup
 
@@ -959,13 +1148,67 @@ All notable changes to this project will be documented in this file.
 
 - Update configuration management and CLI enhancement documentation
 
+- Standardize configuration formatting and update documentation
+
+- **tasks**: Mark TASK-004 and TASK-005 as completed ([#4](https://github.com/EvilBit-Labs/opnDossier/pull/4))
+
+- **tests**: Remove module_files_test.go due to redundancy
+
+- **tests**: Remove markdown_spec_test.go due to redundancy
+
+- **CONTRIBUTING**: Add comprehensive contributing guide
+
+- Add comprehensive Copilot instructions for opnFocus project
+
+- **display**: Streamline command definitions and enhance terminal display handling
+
+- **validator**: Clean up comment formatting in `demo.go`
+
+- **CONTRIBUTING**: Standardize commit message formatting in guidelines
+
+- **errors**: Add unit tests for AggregatedValidationError functionality
+
+- **validator**: Add package-level comments to `opnsense.go`
+
+- Update requirements and user stories documents to include Table of Contents
+
+- Update docstrings for clarity and consistency across multiple files
+
+- **display**: Update terminal display initialization to use options
+
 - Update dependabot configuration and release workflow
 
 - Remove outdated OPNsense model update documentation
 
+- **tests**: Simplify command retrieval in convert tests
+
+- **tests**: Replace inline structs with configuration types in OPNsense tests
+
+- **display**: Replace theme string literals with constants in display package
+
+- **markdown**: Optimize configuration content detection in formatters
+
+- **processor**: Enhance CoreProcessor initialization and improve MDNode documentation
+
 - Add initial project configuration files for Go development
 
+- **requirements**: Clarify report generation modes and template usage
+
 - Remove opnsense report analysis template
+
+- Update mapping table with issue #26 for Phase 4.3 tasks (TASK-023–TASK-029)
+
+- Update AGENTS.md and add migration.md for project transition
+
+- **migration**: Enhance migration.md with detailed steps for repository transition
+
+- **configuration**: Improve JSON formatting in configuration.md for clarity
+
+- **migration**: Expand migration.md with detailed commands for repository transition
+
+- **tasks**: Reorganize input validation task in project_spec/tasks.md
+
+- **tasks**: Mark TASK-024 as complete for multi-mode report controller
 
 - **rules**: Remove deprecated container-use rules documentation
 
@@ -980,6 +1223,27 @@ All notable changes to this project will be documented in this file.
 - **cleanup**: Remove obsolete GoReleaser configuration and test file list
 
 - **changelog**: Update to version 1.0.0-rc1 and document notable changes
+
+
+### Fixed
+
+- Format markdown files to pass pre-commit checks
+
+- **logging**: Update logging output and enhance Kubernetes configuration documentation
+
+- **requirements**: Update gofmt reference to golangci-lint
+
+- **docs**: Correct formatting and content in AGENTS.md, DEVELOPMENT_STANDARDS.md, and README.md
+
+- **tests**: Align indentation in completeness_test.go for consistency
+
+- **tests**: Update display tests to use context for improved handling
+
+- **docs**: Update plugin architecture and firewall reference documentation
+
+- Resolve remaining testifylint issues
+
+- **cli**: Update command flag requirements and task status
 
 
 <!-- generated by git-cliff -->

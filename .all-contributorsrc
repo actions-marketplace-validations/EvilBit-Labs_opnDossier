@@ -55,6 +55,24 @@
       "contributions": [
         "security"
       ]
+    },
+    {
+      "login": "intigenesis",
+      "name": "intigenesis",
+      "avatar_url": "https://avatars.githubusercontent.com/u/313311150?v=4",
+      "profile": "https://github.com/intigenesis",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "AshSgDe29071999",
+      "name": "AshSgDe29071999",
+      "avatar_url": "https://avatars.githubusercontent.com/u/192003854?v=4",
+      "profile": "https://github.com/AshSgDe29071999",
+      "contributions": [
+        "code"
+      ]
     }
   ],
   "contributorsPerLine": 7,

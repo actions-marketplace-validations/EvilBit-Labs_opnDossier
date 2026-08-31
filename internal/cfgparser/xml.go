@@ -42,19 +42,15 @@ func NewXMLParser() *XMLParser {
 	}
 }
 
-// charsetReader delegates to the shared parser.CharsetReader for charset handling.
-// Supported encodings: UTF-8, US-ASCII, ISO-8859-1 (Latin1), and Windows-1252.
-func charsetReader(charset string, input io.Reader) (io.Reader, error) {
-	return parser.CharsetReader(charset, input)
-}
-
 // Parse parses an OPNsense configuration file with security protections using streaming to minimize memory usage.
 // The streaming approach processes XML tokens individually rather than loading the entire document into memory,
 // providing better memory efficiency for large configuration files while maintaining security protections
 // against XML bombs, XXE attacks, and excessive entity expansion.
 // The context is checked periodically to support cancellation of long-running parse operations.
 func (p *XMLParser) Parse(ctx context.Context, r io.Reader) (*schema.OpnSenseDocument, error) {
-	dec := parser.NewSecureXMLDecoder(r, p.MaxInputSize)
+	// Tracked so an oversized config is reported as oversized rather than as
+	// the "unexpected EOF" the truncated stream would otherwise produce.
+	dec, tracker := parser.NewSecureXMLDecoderTracked(r, p.MaxInputSize)
 	// OPNsense-specific decoder settings for streaming token parsing.
 	dec.DefaultSpace = ""
 	dec.AutoClose = xml.HTMLAutoClose
@@ -73,12 +69,12 @@ func (p *XMLParser) Parse(ctx context.Context, r io.Reader) (*schema.OpnSenseDoc
 			break
 		}
 		if err != nil {
-			return nil, handleXMLError(err, dec)
+			return nil, handleXMLError(err, dec, tracker, p.MaxInputSize)
 		}
 
 		if startElem, ok := tok.(xml.StartElement); ok {
 			if err := handleStartElement(dec, &doc, startElem); err != nil {
-				return nil, err
+				return nil, annotateTruncation(err, tracker, p.MaxInputSize)
 			}
 		}
 
@@ -93,18 +89,39 @@ func (p *XMLParser) Parse(ctx context.Context, r io.Reader) (*schema.OpnSenseDoc
 		return nil, ErrMissingOpnSenseDocumentRoot
 	}
 
+	// A decode can succeed with input still beyond the cap: the loop stops on
+	// the closing root tag and never asks for another byte. Returning success
+	// there silently accepts an oversized config and discards whatever
+	// followed, which is the opposite of what the limit is for.
+	if tracker != nil && tracker.Truncated() {
+		return nil, fmt.Errorf("%w (limit %d bytes)", parser.ErrInputTooLarge, p.MaxInputSize)
+	}
+
 	return &doc, nil
 }
 
-// handleXMLError processes XML syntax errors.
-func handleXMLError(err error, dec *xml.Decoder) error {
+// handleXMLError processes XML syntax errors. When tracker reports the input
+// was truncated by the size cap, the cap is named as the cause: the truncated
+// stream reaches encoding/xml as an unexpected EOF, which reads as a corrupt
+// document and sends the operator after the wrong problem.
+func handleXMLError(err error, dec *xml.Decoder, tracker parser.TruncationTracker, maxSize int64) error {
+	if tracker != nil && tracker.Truncated() {
+		return annotateTruncation(err, tracker, maxSize)
+	}
+
 	if wrappedErr := WrapXMLSyntaxErrorWithOffset(err, "opnsense", dec); wrappedErr != nil {
 		return fmt.Errorf("failed to decode XML: %w", wrappedErr)
 	}
+
 	return fmt.Errorf("failed to read token: %w", err)
 }
 
 // handleStartElement processes XML StartElement tokens.
+// Length is inherent to the OPNsense schema's top-level element set — each
+// case binds a differently-typed target, so a map-based dispatch would lose
+// type safety without making the function easier to read.
+//
+//nolint:funlen,cyclop // declarative per-element dispatch; adding an element adds one case (funlen) and one branch (cyclop)
 func handleStartElement(dec *xml.Decoder, doc *schema.OpnSenseDocument, se xml.StartElement) error {
 	if se.Name.Local == "opnsense" {
 		doc.XMLName = se.Name
@@ -117,98 +134,99 @@ func handleStartElement(dec *xml.Decoder, doc *schema.OpnSenseDocument, se xml.S
 
 	switch se.Name.Local {
 	case "version":
-		return decodeElement(dec, &doc.Version, se)
+		return decodeChild(dec, &doc.Version, se)
 	case "trigger_initial_wizard":
-		return decodeElement(dec, &doc.TriggerInitialWizard, se)
+		return decodeChild(dec, &doc.TriggerInitialWizard, se)
 	case "theme":
-		return decodeElement(dec, &doc.Theme, se)
+		return decodeChild(dec, &doc.Theme, se)
 	case "system":
-		return decodeSection(dec, &doc.System, se)
+		return decodeChild(dec, &doc.System, se)
 	case "interfaces":
-		return decodeSection(dec, &doc.Interfaces, se)
+		return decodeChild(dec, &doc.Interfaces, se)
 	case "dhcpd":
-		return decodeSection(dec, &doc.Dhcpd, se)
+		return decodeChild(dec, &doc.Dhcpd, se)
 	case "sysctl":
 		return decodeSysctl(dec, doc, se)
 	case "unbound":
-		return decodeSection(dec, &doc.Unbound, se)
+		return decodeChild(dec, &doc.Unbound, se)
 	case "snmpd":
-		return decodeSection(dec, &doc.Snmpd, se)
+		return decodeChild(dec, &doc.Snmpd, se)
 	case "nat":
-		return decodeSection(dec, &doc.Nat, se)
+		return decodeChild(dec, &doc.Nat, se)
 	case "filter":
-		return decodeSection(dec, &doc.Filter, se)
+		return decodeChild(dec, &doc.Filter, se)
 	case "rrd":
-		return decodeSection(dec, &doc.Rrd, se)
+		return decodeChild(dec, &doc.Rrd, se)
 	case "load_balancer":
-		return decodeSection(dec, &doc.LoadBalancer, se)
+		return decodeChild(dec, &doc.LoadBalancer, se)
 	case "ntpd":
-		return decodeSection(dec, &doc.Ntpd, se)
+		return decodeChild(dec, &doc.Ntpd, se)
 	case "widgets":
-		return decodeSection(dec, &doc.Widgets, se)
+		return decodeChild(dec, &doc.Widgets, se)
 	case "revision":
-		return decodeSection(dec, &doc.Revision, se)
+		return decodeChild(dec, &doc.Revision, se)
 	case "gateways":
-		return decodeSection(dec, &doc.Gateways, se)
+		return decodeChild(dec, &doc.Gateways, se)
 	case "hasync":
-		return decodeSection(dec, &doc.HighAvailabilitySync, se)
+		return decodeChild(dec, &doc.HighAvailabilitySync, se)
 	case "ifgroups":
-		return decodeSection(dec, &doc.InterfaceGroups, se)
+		return decodeChild(dec, &doc.InterfaceGroups, se)
 	case "gifs":
-		return decodeSection(dec, &doc.GIFInterfaces, se)
+		return decodeChild(dec, &doc.GIFInterfaces, se)
 	case "gres":
-		return decodeSection(dec, &doc.GREInterfaces, se)
+		return decodeChild(dec, &doc.GREInterfaces, se)
 	case "laggs":
-		return decodeSection(dec, &doc.LAGGInterfaces, se)
+		return decodeChild(dec, &doc.LAGGInterfaces, se)
 	case "virtualip":
-		return decodeSection(dec, &doc.VirtualIP, se)
+		return decodeChild(dec, &doc.VirtualIP, se)
 	case "vlans":
-		return decodeSection(dec, &doc.VLANs, se)
+		return decodeChild(dec, &doc.VLANs, se)
 	case "openvpn":
-		return decodeSection(dec, &doc.OpenVPN, se)
+		return decodeChild(dec, &doc.OpenVPN, se)
 	case "staticroutes":
-		return decodeSection(dec, &doc.StaticRoutes, se)
+		return decodeChild(dec, &doc.StaticRoutes, se)
 	case "bridges":
-		return decodeSection(dec, &doc.Bridges, se)
+		return decodeChild(dec, &doc.Bridges, se)
 	case "ppps":
-		return decodeSection(dec, &doc.PPPInterfaces, se)
+		return decodeChild(dec, &doc.PPPInterfaces, se)
 	case "wireless":
-		return decodeSection(dec, &doc.Wireless, se)
+		return decodeChild(dec, &doc.Wireless, se)
 	case "ca":
 		var ca schema.CertificateAuthority
-		if err := decodeSection(dec, &ca, se); err != nil {
+		if err := decodeChild(dec, &ca, se); err != nil {
 			return err
 		}
 		doc.CAs = append(doc.CAs, ca)
 		return nil
 	case "dhcpdv6":
-		return decodeSection(dec, &doc.DHCPv6Server, se)
+		return decodeChild(dec, &doc.DHCPv6Server, se)
 	case "cert":
 		var cert schema.Cert
-		if err := decodeSection(dec, &cert, se); err != nil {
+		if err := decodeChild(dec, &cert, se); err != nil {
 			return err
 		}
 		doc.Certs = append(doc.Certs, cert)
 		return nil
 	case "dnsmasq":
-		return decodeSection(dec, &doc.DNSMasquerade, se)
+		return decodeChild(dec, &doc.DNSMasquerade, se)
 	case "syslog":
-		return decodeSection(dec, &doc.Syslog, se)
+		return decodeChild(dec, &doc.Syslog, se)
 	case "OPNsense":
-		return decodeSection(dec, &doc.OPNsense, se)
+		return decodeChild(dec, &doc.OPNsense, se)
 	default:
 		return skipElement(dec)
 	}
 }
 
-// decodeElement decodes a simple element into the target.
-func decodeElement(dec *xml.Decoder, target any, se xml.StartElement) error {
-	return dec.DecodeElement(target, &se)
-}
-
-// decodeSection handles larger sections.
-func decodeSection(dec *xml.Decoder, target any, se xml.StartElement) error {
-	return dec.DecodeElement(target, &se)
+// decodeChild decodes a child element of <opnsense> into the target. Decode
+// errors are annotated via [parser.WrapDecodeError] with the enclosing section
+// path (e.g., "/opnsense/system") — not the leaf field that failed. Even so,
+// the message is far more useful than a bare "strconv.ParseInt" with no
+// context: the operator can narrow the offending field by grepping that
+// section. Deeper path accuracy requires section-by-section decoding; tracked
+// for follow-up.
+func decodeChild(dec *xml.Decoder, target any, se xml.StartElement) error {
+	return parser.WrapDecodeError(dec.DecodeElement(target, &se), "/opnsense/"+se.Name.Local)
 }
 
 // decodeSysctl handles the special sysctl section format.
@@ -288,4 +306,16 @@ func skipElement(dec *xml.Decoder) error {
 	}
 
 	return nil
+}
+
+// annotateTruncation names the size cap as the cause when tracker reports the
+// input was cut short. A truncated stream reaches encoding/xml as an unexpected
+// EOF, which reads as a corrupt document and sends the operator after the wrong
+// problem. Returns err unchanged when the input was not truncated.
+func annotateTruncation(err error, tracker parser.TruncationTracker, maxSize int64) error {
+	if err == nil || tracker == nil || !tracker.Truncated() {
+		return err
+	}
+
+	return fmt.Errorf("%w (limit %d bytes): %w", parser.ErrInputTooLarge, maxSize, err)
 }

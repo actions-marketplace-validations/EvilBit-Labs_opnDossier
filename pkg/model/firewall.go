@@ -24,7 +24,25 @@ const (
 	DirectionAny FirewallDirection = "any"
 )
 
-// IPProtocol represents the IP address family.
+// IPProtocol is the shared firewall-rule IP-protocol enum across device types.
+//
+// Consumers writing switch statements on IPProtocol for OPNsense-only contexts
+// should be aware that IPProtocolInet46 is pfSense-specific (a single rule that
+// matches both IPv4 and IPv6). OPNsense does not emit this value — if it appears
+// on an OPNsense device, it is a bug upstream in the parser or converter.
+//
+// Recommended switch pattern for consumers that need to handle every value:
+//
+//	switch p {
+//	case model.IPProtocolInet:
+//	    // IPv4
+//	case model.IPProtocolInet6:
+//	    // IPv6
+//	case model.IPProtocolInet46:
+//	    // pfSense dual-stack rule (IPv4 + IPv6)
+//	default:
+//	    // unknown / unset
+//	}
 type IPProtocol string
 
 const (
@@ -32,7 +50,12 @@ const (
 	IPProtocolInet IPProtocol = "inet"
 	// IPProtocolInet6 represents the IPv6 address family.
 	IPProtocolInet6 IPProtocol = "inet6"
-	// IPProtocolInet46 matches both IPv4 and IPv6 traffic (pfSense-specific).
+	// IPProtocolInet46 is pfSense-specific: a single firewall rule that matches
+	// both IPv4 and IPv6 traffic (dual-stack). OPNsense does not emit this value;
+	// seeing it on an OPNsense device indicates an upstream parser or converter
+	// bug. Consumers writing OPNsense-only switch statements can safely treat
+	// this case as unreachable, but should still handle it defensively (e.g., log
+	// and fall through to a default) rather than panic.
 	IPProtocolInet46 IPProtocol = "inet46"
 )
 
@@ -100,6 +123,14 @@ type RuleEndpoint struct {
 	Port string `json:"port,omitempty" yaml:"port,omitempty"`
 	// Negated indicates the endpoint match is inverted (NOT logic).
 	Negated bool `json:"negated,omitempty" yaml:"negated,omitempty"`
+	// AddressRef identifies the named object (alias) Address was resolved
+	// from, when the endpoint's address was expressed as an alias rather
+	// than a literal. Nil when Address is a literal value.
+	AddressRef *ObjectRef `json:"addressRef,omitempty" yaml:"addressRef,omitempty"`
+	// PortRef identifies the named object (alias) Port was resolved from,
+	// when the endpoint's port was expressed as an alias rather than a
+	// literal. Nil when Port is a literal value.
+	PortRef *ObjectRef `json:"portRef,omitempty" yaml:"portRef,omitempty"`
 }
 
 // FirewallRule represents a normalized firewall filter rule.
@@ -132,6 +163,10 @@ type FirewallRule struct {
 
 	// Target is the redirect target for NAT-associated rules.
 	Target string `json:"target,omitempty" yaml:"target,omitempty"`
+	// TargetRef identifies the named object (alias) Target was resolved from,
+	// when the redirect target was expressed as an alias rather than a literal.
+	// Nil when Target is a literal value. Tracked as an unused-object root.
+	TargetRef *ObjectRef `json:"targetRef,omitempty" yaml:"targetRef,omitempty"`
 	// Gateway is the policy-based routing gateway for the rule.
 	Gateway string `json:"gateway,omitempty" yaml:"gateway,omitempty"`
 
@@ -206,10 +241,20 @@ type NATRule struct {
 	Destination RuleEndpoint `json:"destination" yaml:"destination,omitempty"`
 	// Target is the NAT translation target address.
 	Target string `json:"target,omitempty" yaml:"target,omitempty"`
+	// TargetRef identifies the named object (alias) Target was resolved from,
+	// when the translation address was expressed as a host alias rather than a
+	// literal. Nil when Target is a literal value. Tracked as an unused-object root.
+	TargetRef *ObjectRef `json:"targetRef,omitempty" yaml:"targetRef,omitempty"`
 	// SourcePort is the translated source port.
 	SourcePort string `json:"sourcePort,omitempty" yaml:"sourcePort,omitempty"`
+	// SourcePortRef identifies the named object (alias) SourcePort was resolved
+	// from, when expressed as a port alias rather than a literal. Nil for literals.
+	SourcePortRef *ObjectRef `json:"sourcePortRef,omitempty" yaml:"sourcePortRef,omitempty"`
 	// NatPort is the translated destination port.
 	NatPort string `json:"natPort,omitempty" yaml:"natPort,omitempty"`
+	// NatPortRef identifies the named object (alias) NatPort was resolved from,
+	// when expressed as a port alias rather than a literal. Nil for literals.
+	NatPortRef *ObjectRef `json:"natPortRef,omitempty" yaml:"natPortRef,omitempty"`
 	// PoolOpts specifies the address pool options for NAT translation.
 	PoolOpts string `json:"poolOpts,omitempty" yaml:"poolOpts,omitempty"`
 	// StaticNatPort preserves the original source port during NAT translation.
@@ -246,12 +291,27 @@ type InboundNATRule struct {
 	Destination RuleEndpoint `json:"destination" yaml:"destination,omitempty"`
 	// ExternalPort is the external port or range to forward.
 	ExternalPort string `json:"externalPort,omitempty" yaml:"externalPort,omitempty"`
+	// ExternalPortRef identifies the named object (alias) ExternalPort was
+	// resolved from, when expressed as a port alias rather than a literal. Nil
+	// for literals. Tracked as an unused-object root.
+	ExternalPortRef *ObjectRef `json:"externalPortRef,omitempty" yaml:"externalPortRef,omitempty"`
 	// InternalIP is the internal target IP address for port forwarding.
 	InternalIP string `json:"internalIp,omitempty" yaml:"internalIp,omitempty"`
+	// InternalIPRef identifies the named object (alias) InternalIP was resolved
+	// from, when the redirect target was expressed as a host alias rather than a
+	// literal. Nil for literals. Tracked as an unused-object root.
+	InternalIPRef *ObjectRef `json:"internalIpRef,omitempty" yaml:"internalIpRef,omitempty"`
 	// InternalPort is the internal target port for port forwarding.
 	InternalPort string `json:"internalPort,omitempty" yaml:"internalPort,omitempty"`
+	// InternalPortRef identifies the named object (alias) InternalPort was
+	// resolved from, when expressed as a port alias rather than a literal. Nil
+	// for literals. Tracked as an unused-object root.
+	InternalPortRef *ObjectRef `json:"internalPortRef,omitempty" yaml:"internalPortRef,omitempty"`
 	// LocalPort is the local port used for NAT reflection.
 	LocalPort string `json:"localPort,omitempty" yaml:"localPort,omitempty"`
+	// LocalPortRef identifies the named object (alias) LocalPort was resolved
+	// from, when expressed as a port alias rather than a literal. Nil for literals.
+	LocalPortRef *ObjectRef `json:"localPortRef,omitempty" yaml:"localPortRef,omitempty"`
 	// Reflection is the NAT reflection setting for this rule.
 	Reflection string `json:"reflection,omitempty" yaml:"reflection,omitempty"`
 	// NATReflection is the NAT reflection mode (e.g., "enable", "disable", "purenat").
@@ -284,8 +344,9 @@ func (c NATConfig) HasData() bool {
 		c.BiNATEnabled
 }
 
-// NATSummary is a convenience view of a device's NAT configuration for
-// report generation.
+// NATSummary is a read-only convenience view of a device's NAT configuration,
+// returned by [CommonDevice.NATSummary]. Slice fields are cloned so callers
+// can iterate or filter without mutating the original device.
 type NATSummary struct {
 	// Mode is the outbound NAT mode.
 	Mode NATOutboundMode `json:"mode,omitempty" yaml:"mode,omitempty"`

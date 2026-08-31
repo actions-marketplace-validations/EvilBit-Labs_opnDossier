@@ -2,7 +2,6 @@ package builder
 
 import (
 	"bytes"
-	"fmt"
 	"strconv"
 
 	"github.com/EvilBit-Labs/opnDossier/internal/converter/formatters"
@@ -22,7 +21,7 @@ func (b *MarkdownBuilder) writeSecuritySection(md *markdown.Markdown, data *comm
 		if mode == "" {
 			mode = data.NAT.OutboundMode
 		}
-		md.PlainTextf("%s: %s", markdown.Bold("NAT Mode"), mode).LF().
+		md.PlainTextf("%s: %s", markdown.Bold("NAT Mode"), formatters.EscapeMarkdownValue(string(mode))).LF().
 			PlainTextf("%s: %s", markdown.Bold("NAT Reflection"), formatters.FormatBool(natSummary.ReflectionDisabled)).
 			LF().
 			PlainTextf(
@@ -66,7 +65,7 @@ func (b *MarkdownBuilder) BuildSecuritySection(data *common.CommonDevice) string
 	var buf bytes.Buffer
 	md := markdown.NewMarkdown(&buf)
 	b.writeSecuritySection(md, data)
-	return md.String()
+	return renderMarkdown(md)
 }
 
 // writeIDSSection writes the IDS/Suricata configuration section to the markdown instance.
@@ -86,16 +85,22 @@ func (b *MarkdownBuilder) writeIDSSection(md *markdown.Markdown, data *common.Co
 
 	// Configuration summary table
 	configRows := [][]string{
-		{"**Status**", "Enabled"},
+		{"**Status**", labelEnabled},
 		{"**Mode**", detectionMode},
 	}
 
 	if ids.Detect.Profile != "" {
-		configRows = append(configRows, []string{"**Detection Profile**", ids.Detect.Profile})
+		configRows = append(
+			configRows,
+			[]string{"**Detection Profile**", formatters.EscapeTableContent(ids.Detect.Profile)},
+		)
 	}
 
 	if ids.MPMAlgo != "" {
-		configRows = append(configRows, []string{"**Pattern Matching Algorithm**", ids.MPMAlgo})
+		configRows = append(
+			configRows,
+			[]string{"**Pattern Matching Algorithm**", formatters.EscapeTableContent(ids.MPMAlgo)},
+		)
 	}
 
 	configRows = append(
@@ -104,12 +109,15 @@ func (b *MarkdownBuilder) writeIDSSection(md *markdown.Markdown, data *common.Co
 	)
 
 	if ids.DefaultPacketSize != "" {
-		configRows = append(configRows, []string{"**Default Packet Size**", ids.DefaultPacketSize})
+		configRows = append(
+			configRows,
+			[]string{"**Default Packet Size**", formatters.EscapeTableContent(ids.DefaultPacketSize)},
+		)
 	}
 
 	md.H4("Configuration Summary").
 		Table(markdown.TableSet{
-			Header: []string{"Setting", "Value"},
+			Header: []string{colSetting, colValue},
 			Rows:   configRows,
 		})
 
@@ -118,7 +126,7 @@ func (b *MarkdownBuilder) writeIDSSection(md *markdown.Markdown, data *common.Co
 		md.H4("Monitored Interfaces")
 		interfaceItems := make([]string, 0, len(ids.Interfaces))
 		for _, iface := range ids.Interfaces {
-			interfaceItems = append(interfaceItems, fmt.Sprintf("`%s`", iface))
+			interfaceItems = append(interfaceItems, formatters.CodeSpan(iface))
 		}
 		md.BulletList(interfaceItems...)
 	}
@@ -128,7 +136,7 @@ func (b *MarkdownBuilder) writeIDSSection(md *markdown.Markdown, data *common.Co
 		md.H4("Home Networks")
 		netItems := make([]string, 0, len(ids.HomeNetworks))
 		for _, net := range ids.HomeNetworks {
-			netItems = append(netItems, fmt.Sprintf("`%s`", net))
+			netItems = append(netItems, formatters.CodeSpan(net))
 		}
 		md.BulletList(netItems...)
 	}
@@ -140,24 +148,24 @@ func (b *MarkdownBuilder) writeIDSSection(md *markdown.Markdown, data *common.Co
 	}
 
 	if ids.LogPayload != "" {
-		logRows = append(logRows, []string{"**Payload Logging**", ids.LogPayload})
+		logRows = append(logRows, []string{"**Payload Logging**", formatters.EscapeTableContent(ids.LogPayload)})
 	}
 
 	if ids.Verbosity != "" {
-		logRows = append(logRows, []string{"**Verbosity**", ids.Verbosity})
+		logRows = append(logRows, []string{"**Verbosity**", formatters.EscapeTableContent(ids.Verbosity)})
 	}
 
 	if ids.AlertLogrotate != "" {
-		logRows = append(logRows, []string{"**Log Rotation**", ids.AlertLogrotate})
+		logRows = append(logRows, []string{"**Log Rotation**", formatters.EscapeTableContent(ids.AlertLogrotate)})
 	}
 
 	if ids.AlertSaveLogs != "" {
-		logRows = append(logRows, []string{"**Log Retention**", ids.AlertSaveLogs})
+		logRows = append(logRows, []string{"**Log Retention**", formatters.EscapeTableContent(ids.AlertSaveLogs)})
 	}
 
 	md.H4("Logging Configuration").
 		Table(markdown.TableSet{
-			Header: []string{"Setting", "Value"},
+			Header: []string{colSetting, colValue},
 			Rows:   logRows,
 		})
 
@@ -184,7 +192,7 @@ func (b *MarkdownBuilder) BuildIDSSection(data *common.CommonDevice) string {
 	var buf bytes.Buffer
 	md := markdown.NewMarkdown(&buf)
 	b.writeIDSSection(md, data)
-	return md.String()
+	return renderMarkdown(md)
 }
 
 // WriteFirewallRulesTable writes a firewall rules table and returns md for chaining.
@@ -199,7 +207,7 @@ func (b *MarkdownBuilder) WriteFirewallRulesTable(
 func BuildFirewallRulesTableSet(rules []common.FirewallRule) *markdown.TableSet {
 	headers := []string{
 		"#",
-		"Interface",
+		colInterface,
 		"Action",
 		"IP Ver",
 		"Proto",
@@ -208,8 +216,8 @@ func BuildFirewallRulesTableSet(rules []common.FirewallRule) *markdown.TableSet 
 		"Target",
 		"Source Port",
 		"Dest Port",
-		"Enabled",
-		"Description",
+		colEnabled,
+		colDescription,
 	}
 
 	rows := make([][]string, 0, len(rules))
@@ -229,12 +237,12 @@ func BuildFirewallRulesTableSet(rules []common.FirewallRule) *markdown.TableSet 
 		rows = append(rows, []string{
 			strconv.Itoa(i + 1),
 			interfaceLinks,
-			string(rule.Type),
-			string(rule.IPProtocol),
-			rule.Protocol,
-			source,
-			dest,
-			rule.Target,
+			formatters.EscapeTableContent(string(rule.Type)),
+			formatters.EscapeTableContent(string(rule.IPProtocol)),
+			formatters.EscapeTableContent(rule.Protocol),
+			formatters.EscapeTableContent(source),
+			formatters.EscapeTableContent(dest),
+			formatters.EscapeTableContent(rule.Target),
 			formatters.EscapeTableContent(rule.Source.Port),
 			formatters.EscapeTableContent(rule.Destination.Port),
 			formatters.FormatBoolInverted(rule.Disabled),

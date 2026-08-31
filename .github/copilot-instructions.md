@@ -49,17 +49,15 @@ opnDossier is a tool for auditing and reporting on OPNsense configurations, with
 
   - `pkg/schema/opnsense/`: Canonical OPNsense XML data model structs.
 
-  - `internal/processor/`: Normalization, validation, analysis, and transformation pipeline.
-
   - `internal/converter/`: Multi-format export (Markdown, JSON, YAML) using templates and options.
 
   - `internal/audit/`, `internal/compliance/`, `internal/plugins/`: Compliance audit engine and plugin system (STIG, SANS, firewall).
 
   - `internal/display/`, `internal/logging/`: Terminal output and structured logging.
 
-  - **Data Flow**: `cfgparser` → `pkg/parser/opnsense` → `processor` → `converter` → `export`
+  - **Data Flow**: `internal/cfgparser` decodes XML → `pkg/parser/opnsense` converts schema DTOs to `CommonDevice` → `internal/converter` enriches, redacts, and renders → `internal/export` writes
 
-- **Audit overlays**: `processor` → `audit` → `plugins`
+- **Audit overlays**: `converter` → `audit` → `plugins`
 
 ## Technology Stack
 
@@ -84,8 +82,11 @@ opnDossier is a tool for auditing and reporting on OPNsense configurations, with
   - `just ci-check` - run full CI-equivalent checks (must pass before reporting success)
   - `just format` - format code and documentation
   - `just dev` - run in development mode
+- **Pre-commit hooks may modify files**: It is normal for hooks to rewrite files during commit attempts, especially for formatting and other automatic fixes. Run `just ci-check` immediately before committing to reduce churn. If hooks still modify files, restage the changes and retry the commit.
+- **Read `GOTCHAS.md` before substantial changes**: It captures non-obvious behaviors and repository footguns that frequently affect parser work, tests, and CLI behavior.
+- **Markdown validation**: Never run `mdformat` directly. Use `pre-commit run -a` so the repository's configured plugins and formatting pipeline are applied correctly.
+- **`//nolint:` placement**: Put `//nolint:` directives on their own line immediately above the relevant call or declaration. Inline directives may be stripped or broken by formatting tools.
 - **No external dependencies**: All code must run fully offline.
-- **Never commit code without explicit user permission.**
 
 ## Go Coding Standards
 
@@ -242,7 +243,6 @@ opndossier/
 ├── cmd/              # Command entry points (convert, display, validate, root)
 ├── internal/         # Private application logic
 │   ├── cfgparser/    # XML parsing and validation
-│   ├── processor/    # Data processing and analysis
 │   ├── converter/    # Data conversion utilities
 │   ├── display/      # Terminal display formatting
 │   ├── export/       # File export functionality
@@ -254,14 +254,13 @@ opndossier/
 │   │   └── opnsense/ # OPNsense parser + schema→CommonDevice converter
 │   └── schema/
 │       └── opnsense/ # Canonical OPNsense XML data model structs
-├── project_spec/     # Requirements, tasks, user stories
 └── docs/             # Documentation
 ```
 
 ## Key Files & References
 
-- `AGENTS.md`, `docs/development/standards.md`, `docs/development/architecture.md`, `project_spec/requirements.md`
-- `cmd/convert.go`, `pkg/parser/opnsense/converter.go`, `internal/cfgparser/xml.go`, `internal/processor/README.md`
+- `AGENTS.md`, `docs/development/standards.md`, `docs/development/architecture.md`
+- `cmd/convert.go`, `pkg/parser/opnsense/converter.go`, `internal/cfgparser/xml.go`, `internal/converter/enrichment.go`
 
 ## Example Patterns
 
@@ -297,6 +296,8 @@ type Plugin interface {
 - **CodeRabbit.ai Integration**: Prefer coderabbit.ai for code review over GitHub Copilot auto-reviews
 - **Single Maintainer Workflow**: Configure for single maintainer (UncleSp1d3r) with no second reviewer requirement
 - **No Auto-commits**: Never commit code on behalf of maintainer without explicit permission
+- **No Auto-merges**: Never merge on behalf of the maintainer. Merges require a passing CI check and human approval.
+- **AI Disclosure**: When preparing pull request descriptions, briefly disclose AI assistance in line with `AI_POLICY.md`.
 
 ### Assistant Behavior Rules
 
@@ -305,6 +306,7 @@ type Plugin interface {
 - **Tool Usage**: Use `just` for task execution, `go` commands for Go development
 - **Focus on Value**: Enhance the project's unique value proposition as an OPNsense configuration auditing tool
 - **Respect Documentation**: Always consult and follow project documentation before making changes
+- **Zero Tolerance for Tech Debt**: Do not wave away failing checks, warnings, or CI issues as pre-existing. Investigate and fix them when they block the quality bar.
 
 ### Code Generation Requirements
 
@@ -377,7 +379,7 @@ When AI agents contribute to this project, they **MUST**:
 08. **Validate all inputs** and handle edge cases
 09. **Document new functions and types** following Go conventions
 10. **Never commit secrets** or hardcoded credentials
-11. **Consult project documentation** - requirements.md, docs/development/architecture.md, and docs/development/standards.md for guidance
+11. **Consult project documentation** - docs/development/architecture.md and docs/development/standards.md for guidance
 12. When rendering reports, always prefer structured config data + audit overlays over flat summary tables
 13. Blue team output should favor clarity, grouping, and actionability. Red team output should favor target prioritization and pivot surface discovery
 14. Validate all generated markdown for formatting correctness using mdformat for formatting and markdownlint-cli2 for validation
@@ -396,8 +398,7 @@ Before suggesting code completion or marking a task complete, AI agents **MUST**
 - [ ] Input validation implemented where needed (especially file paths and XML input)
 - [ ] Documentation updated for new features or changed behavior
 - [ ] Dependencies properly managed (`go mod tidy`, `go mod verify`)
-- [ ] Code follows established patterns and interfaces (parser/model/processor/audit/converter layering)
-- [ ] Requirements compliance verified against `project_spec/requirements.md`
+- [ ] Code follows established patterns and interfaces (parser/model/audit/converter layering)
 - [ ] Architecture patterns followed per `docs/development/architecture.md` and related docs
 - [ ] Development standards adhered to per `docs/development/standards.md`
 - [ ] Use `just` for all dev tasks
@@ -447,9 +448,8 @@ When encountering problems:
 
 AI agents **MUST** familiarize themselves with:
 
-- **[requirements.md](project_spec/requirements.md)** - Complete functional and technical requirements
-- **[docs/development/architecture.md](docs/development/architecture.md)** - System design, data flow, and component architecture
-- **[docs/development/standards.md](docs/development/standards.md)** - Go-specific coding standards and project structure
+- **[docs/development/architecture.md](../docs/development/architecture.md)** - System design, data flow, and component architecture
+- **[docs/development/standards.md](../docs/development/standards.md)** - Go-specific coding standards and project structure
 - **[AGENTS.md](../AGENTS.md)** - Complete AI agent development guidelines (single source of truth)
 
 **Remember**: When in doubt, refer to AGENTS.md for the complete authoritative guidance. This file provides Copilot-specific quick reference derived from that source.

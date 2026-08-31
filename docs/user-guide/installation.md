@@ -97,6 +97,13 @@ go install github.com/EvilBit-Labs/opnDossier@latest
 
 This installs the latest release to your `$GOPATH/bin` directory.
 
+!!! warning "The installed binary is named `opnDossier`"
+    `go install` derives the binary name from the module path, so this method produces `opnDossier` (capital D) while every other install method — and all documentation — uses `opndossier`. On case-sensitive filesystems, rename it:
+
+    ```bash
+    mv -i "$(go env GOPATH)/bin/opnDossier" "$(go env GOPATH)/bin/opndossier"
+    ```
+
 ### 6. Build from Source
 
 ```bash
@@ -133,6 +140,8 @@ docker pull ghcr.io/evilbit-labs/opndossier:latest
 go install github.com/EvilBit-Labs/opnDossier@latest
 ```
 
+Remember to rename the resulting `opnDossier` binary to `opndossier`, as described under [Go Install](#5-go-install) above.
+
 ## Verifying Downloads
 
 Every release publishes a `opnDossier_checksums.txt` file containing SHA-256 hashes for all release artifacts (packages, binaries, and archives). The checksum file is signed with [Cosign](https://docs.sigstore.dev/cosign/overview/) keyless signatures via Sigstore.
@@ -158,7 +167,7 @@ If you have [Cosign](https://docs.sigstore.dev/cosign/system_config/installation
 # Download the signature bundle
 curl -LO https://github.com/EvilBit-Labs/opnDossier/releases/latest/download/opnDossier_checksums.txt.sigstore.json
 
-# Verify (replace TAG with the release tag, e.g. v0.9.0)
+# Verify (replace TAG with the release tag, e.g. v1.7.2)
 cosign verify-blob \
   --certificate-identity "https://github.com/EvilBit-Labs/opnDossier/.github/workflows/release.yml@refs/tags/TAG" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \

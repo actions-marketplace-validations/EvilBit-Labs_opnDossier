@@ -18,6 +18,7 @@ type auditFlagSnapshot struct {
 	plugins      []string
 	pluginDir    string
 	failuresOnly bool
+	blackhat     bool
 	formatFlag   string
 	outputFile   string
 	forceFlag    bool
@@ -31,6 +32,7 @@ func captureAuditFlags() auditFlagSnapshot {
 		plugins:      auditPlugins,
 		pluginDir:    auditPluginDir,
 		failuresOnly: auditFailuresOnly,
+		blackhat:     auditBlackhat,
 		formatFlag:   format,
 		outputFile:   outputFile,
 		forceFlag:    force,
@@ -44,6 +46,7 @@ func (s auditFlagSnapshot) restore() {
 	auditPlugins = s.plugins
 	auditPluginDir = s.pluginDir
 	auditFailuresOnly = s.failuresOnly
+	auditBlackhat = s.blackhat
 	format = s.formatFlag
 	outputFile = s.outputFile
 	force = s.forceFlag
@@ -141,10 +144,14 @@ func TestAuditCmdHelpOutput(t *testing.T) {
 		assert.Contains(t, output, sub, "help output should contain %q", sub)
 	}
 
-	// Verify the full audit mode description strings from auditCmd.Long
+	// Verify the mode description content from auditCmd.Long is present in help
+	// output. Match on stable substrings rather than exact alignment so Cobra
+	// word-wrap or column-padding changes do not break the test.
 	modeDescriptions := []string{
-		"blue      - Defensive audit with security findings and recommendations (default)",
-		"red       - Attacker-focused recon report highlighting attack surfaces",
+		"blue",
+		"Defensive audit with security findings and recommendations (default)",
+		"red",
+		"Attacker-focused recon report highlighting attack surfaces",
 	}
 
 	for _, desc := range modeDescriptions {
@@ -485,6 +492,147 @@ func TestAuditCmdPreRunEFailuresOnlyRequiresBlueMode(t *testing.T) {
 				assert.Contains(t, err.Error(), tt.errSubstr)
 			} else {
 				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestAuditCmdPreRunEPluginDirTrustModelWarning verifies that PreRunE emits a
+// stderr warning disclosing the dynamic-plugin trust model when --plugin-dir
+// is supplied. The warning mirrors the red-mode precedent and pins the key
+// risk phrases ("full process privileges", "no signature verification") so
+// accidental regressions in the warning text fail the build.
+//
+// See todos #106 and #123 and GOTCHAS §2.5.
+func TestAuditCmdPreRunEPluginDirTrustModelWarning(t *testing.T) {
+	tests := []struct {
+		name      string
+		pluginDir string
+		wantWarn  bool
+	}{
+		{"empty plugin-dir emits no warning", "", false},
+		{"non-empty plugin-dir emits warning", "/tmp/plugins", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			auditSnap := captureAuditFlags()
+			sharedSnap := captureSharedFlags()
+			t.Cleanup(func() {
+				auditSnap.restore()
+				sharedSnap.restore()
+			})
+
+			tempCmd := &cobra.Command{}
+			tempCmd.Flags().StringVar(&auditMode, "mode", "blue", "")
+			tempCmd.Flags().StringSliceVar(&auditPlugins, "plugins", []string{}, "")
+			tempCmd.Flags().StringVar(&auditPluginDir, "plugin-dir", "", "")
+			tempCmd.Flags().StringVar(&outputFile, "output", "", "")
+			tempCmd.Flags().StringVar(&format, "format", "markdown", "")
+			tempCmd.Flags().Bool("no-wrap", false, "")
+			tempCmd.Flags().Int("wrap", -1, "")
+
+			require.NoError(t, tempCmd.Flags().Set("mode", "blue"))
+			if tt.pluginDir != "" {
+				require.NoError(t, tempCmd.Flags().Set("plugin-dir", tt.pluginDir))
+			}
+
+			stderr := captureStderr(t, func() {
+				err := auditCmd.PreRunE(tempCmd, []string{"dummy.xml"})
+				require.NoError(t, err)
+			})
+
+			if tt.wantWarn {
+				assert.Contains(t, stderr, "full process privileges",
+					"stderr should disclose plugin privileges when --plugin-dir is set")
+				assert.Contains(t, stderr, "no signature verification",
+					"stderr should disclose absent signature checks when --plugin-dir is set")
+				assert.Contains(t, stderr, "GOTCHAS §2.5",
+					"stderr should cross-reference GOTCHAS §2.5 for the full threat model")
+			} else {
+				assert.NotContains(t, stderr, "full process privileges",
+					"stderr must not warn when --plugin-dir is empty")
+				assert.NotContains(t, stderr, "no signature verification",
+					"stderr must not warn when --plugin-dir is empty")
+			}
+		})
+	}
+}
+
+// TestAuditCmdPreRunERedModeEmitsNoStubWarning covers R22: red mode now
+// performs real analysis, so PreRunE must no longer emit the removed
+// "experimental / not yet fully implemented" stub warning.
+func TestAuditCmdPreRunERedModeEmitsNoStubWarning(t *testing.T) {
+	auditSnap := captureAuditFlags()
+	sharedSnap := captureSharedFlags()
+	t.Cleanup(func() {
+		auditSnap.restore()
+		sharedSnap.restore()
+	})
+
+	tempCmd := &cobra.Command{}
+	tempCmd.Flags().StringVar(&auditMode, "mode", "blue", "")
+	tempCmd.Flags().StringSliceVar(&auditPlugins, "plugins", []string{}, "")
+	tempCmd.Flags().StringVar(&auditPluginDir, "plugin-dir", "", "")
+	tempCmd.Flags().StringVar(&outputFile, "output", "", "")
+	tempCmd.Flags().StringVar(&format, "format", "markdown", "")
+	tempCmd.Flags().Bool("no-wrap", false, "")
+	tempCmd.Flags().Int("wrap", -1, "")
+
+	require.NoError(t, tempCmd.Flags().Set("mode", "red"))
+
+	stderr := captureStderr(t, func() {
+		err := auditCmd.PreRunE(tempCmd, []string{"dummy.xml"})
+		require.NoError(t, err)
+	})
+
+	assert.NotContains(t, stderr, "experimental",
+		"red mode must not emit the removed stub warning")
+	assert.NotContains(t, stderr, "not yet fully implemented",
+		"red mode must not emit the removed stub warning")
+}
+
+// TestAuditCmdPreRunEBlackhatRequiresRedMode covers R20: --audit-blackhat is
+// accepted in red mode and rejected in blue mode (it only affects red-mode
+// ExploitNote tone).
+func TestAuditCmdPreRunEBlackhatRequiresRedMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    string
+		wantErr bool
+	}{
+		{"blackhat with red mode is accepted", "red", false},
+		{"blackhat with blue mode is rejected", "blue", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			auditSnap := captureAuditFlags()
+			sharedSnap := captureSharedFlags()
+			t.Cleanup(func() {
+				auditSnap.restore()
+				sharedSnap.restore()
+			})
+
+			tempCmd := &cobra.Command{}
+			tempCmd.Flags().StringVar(&auditMode, "mode", "blue", "")
+			tempCmd.Flags().StringSliceVar(&auditPlugins, "plugins", []string{}, "")
+			tempCmd.Flags().StringVar(&auditPluginDir, "plugin-dir", "", "")
+			tempCmd.Flags().BoolVar(&auditBlackhat, "audit-blackhat", false, "")
+			tempCmd.Flags().StringVar(&outputFile, "output", "", "")
+			tempCmd.Flags().StringVar(&format, "format", "markdown", "")
+			tempCmd.Flags().Bool("no-wrap", false, "")
+			tempCmd.Flags().Int("wrap", -1, "")
+
+			require.NoError(t, tempCmd.Flags().Set("mode", tt.mode))
+			require.NoError(t, tempCmd.Flags().Set("audit-blackhat", "true"))
+
+			err := auditCmd.PreRunE(tempCmd, []string{"dummy.xml"})
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "--audit-blackhat is only supported with --mode red")
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

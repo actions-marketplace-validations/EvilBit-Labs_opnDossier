@@ -7,9 +7,9 @@ import (
 
 // configCmd is the parent command for configuration management subcommands.
 var configCmd = &cobra.Command{ //nolint:gochecknoglobals // Cobra command
-	Use:     "config",
+	Use:     cmdNameConfig,
 	Short:   "Manage opnDossier configuration",
-	GroupID: "utility",
+	GroupID: groupUtility,
 	Long: `The 'config' command group provides utilities for managing opnDossier configuration.
 
 Subcommands:
@@ -19,19 +19,19 @@ Subcommands:
 
 Examples:
   # Show current effective configuration
-  opnDossier config show
+  opndossier config show
 
   # Show configuration in JSON format
-  opnDossier config show --json
+  opndossier config show --json
 
   # Generate a new configuration template
-  opnDossier config init
+  opndossier config init
 
   # Generate template at a specific path
-  opnDossier config init --output ~/.opnDossier.yaml
+  opndossier config init --output ~/.opnDossier.yaml
 
   # Validate an existing configuration file
-  opnDossier config validate ~/.opnDossier.yaml`,
+  opndossier config validate ~/.opnDossier.yaml`,
 }
 
 // init registers the config command with the root command.

@@ -3,62 +3,34 @@ package cmd
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 
-	"github.com/EvilBit-Labs/opnDossier/internal/audit"
 	"github.com/EvilBit-Labs/opnDossier/internal/config"
 	"github.com/EvilBit-Labs/opnDossier/internal/converter"
 	"github.com/EvilBit-Labs/opnDossier/internal/logging"
 	common "github.com/EvilBit-Labs/opnDossier/pkg/model"
 )
 
-// TestDetermineOutputPathSimple tests basic output path determination.
+// TestDetermineOutputPathSimple covers destination resolution. Overwrite
+// protection moved to confirmOverwrite, so this function no longer touches the
+// filesystem and cannot fail.
 func TestDetermineOutputPathSimple(t *testing.T) {
-	// Test with no output specified - should return empty for stdout
-	result, err := determineOutputPath("config.xml", "", ".md", nil, false)
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if result != "" {
-		t.Errorf("Expected empty result, got: %s", result)
+	if got := determineOutputPath("", nil); got != "" {
+		t.Errorf("no output configured should mean stdout, got: %s", got)
 	}
 
-	// Test with CLI flag output
-	result, err = determineOutputPath("config.xml", "output.md", ".md", nil, false)
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if result != "output.md" {
-		t.Errorf("Expected 'output.md', got: %s", result)
+	if got := determineOutputPath("output.md", nil); got != "output.md" {
+		t.Errorf("Expected 'output.md', got: %s", got)
 	}
 
-	// Test with config output
 	cfg := &config.Config{OutputFile: "config-output.md"}
-	result, err = determineOutputPath("config.xml", "", ".md", cfg, false)
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if result != "config-output.md" {
-		t.Errorf("Expected 'config-output.md', got: %s", result)
+	if got := determineOutputPath("", cfg); got != "config-output.md" {
+		t.Errorf("Expected 'config-output.md', got: %s", got)
 	}
 
-	// Test with forced overwrite of existing file
-	tempFile, err := os.CreateTemp(t.TempDir(), "test-*.md")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tempFile.Name())
-	if err := tempFile.Close(); err != nil {
-		t.Fatalf("Failed to close temp file: %v", err)
-	}
-
-	result, err = determineOutputPath("config.xml", tempFile.Name(), ".md", nil, true)
-	if err != nil {
-		t.Errorf("Unexpected error with force=true: %v", err)
-	}
-	if result != tempFile.Name() {
-		t.Errorf("Expected temp file name, got: %s", result)
+	// The CLI flag wins over a configured output_file.
+	if got := determineOutputPath("flag.md", cfg); got != "flag.md" {
+		t.Errorf("CLI flag should take precedence, got: %s", got)
 	}
 }
 
@@ -83,31 +55,44 @@ func TestGenerateOutputByFormatSimple(t *testing.T) {
 		Theme:  converter.ThemeAuto,
 	}
 
-	result, err := generateOutputByFormat(ctx, device, opt, audit.Options{}, logger)
+	result, handler, err := generateOutputByFormat(ctx, device, opt, logger)
 	if err != nil {
 		t.Errorf("Unexpected error for markdown: %v", err)
 	}
 	if result == "" {
 		t.Errorf("Expected non-empty result for markdown")
 	}
+	if handler == nil {
+		t.Errorf("Expected non-nil handler for markdown")
+	} else if handler.FileExtension() != ".md" {
+		t.Errorf("Expected .md extension, got: %s", handler.FileExtension())
+	}
 
 	// Test JSON format - programmatic generation should succeed
 	opt.Format = converter.FormatJSON
-	jsonResult, err := generateOutputByFormat(ctx, device, opt, audit.Options{}, logger)
+	jsonResult, jsonHandler, err := generateOutputByFormat(ctx, device, opt, logger)
 	if err != nil {
 		t.Errorf("JSON format should succeed with programmatic generator: %v", err)
 	}
 	if jsonResult == "" {
 		t.Errorf("Expected non-empty result for JSON format")
 	}
+	if jsonHandler == nil {
+		t.Errorf("Expected non-nil handler for JSON")
+	} else if jsonHandler.FileExtension() != ".json" {
+		t.Errorf("Expected .json extension, got: %s", jsonHandler.FileExtension())
+	}
 
 	// Test unknown format (should return an error)
 	opt.Format = converter.Format("unknown")
-	_, err = generateOutputByFormat(ctx, device, opt, audit.Options{}, logger)
+	_, unknownHandler, err := generateOutputByFormat(ctx, device, opt, logger)
 	if err == nil {
 		t.Errorf("Expected error for unknown format, got nil")
 	} else if !errors.Is(err, ErrUnsupportedOutputFormat) {
 		t.Errorf("Expected ErrUnsupportedOutputFormat, got: %v", err)
+	}
+	if unknownHandler != nil {
+		t.Errorf("Expected nil handler for unknown format, got: %v", unknownHandler)
 	}
 }
 
@@ -168,6 +153,7 @@ func TestBuildConversionOptionsSimple(t *testing.T) {
 	}
 
 	// Test with config
+	//nolint:staticcheck // SA1019: exercising deprecated flat field for backward-compat coverage.
 	cfg := &config.Config{
 		Theme: "dark",
 	}

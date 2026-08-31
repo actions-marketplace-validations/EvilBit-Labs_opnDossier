@@ -2,7 +2,6 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/EvilBit-Labs/opnDossier/internal/audit"
 	"github.com/EvilBit-Labs/opnDossier/internal/cfgparser"
 	"github.com/EvilBit-Labs/opnDossier/internal/config"
 	"github.com/EvilBit-Labs/opnDossier/internal/constants"
@@ -51,7 +49,7 @@ var (
 //   - `--format, -f` : output format to produce; supported values are `markdown`, `json`, and `yaml` (default: `markdown`).
 //   - `--force`      : overwrite existing output files without prompting.
 //
-// It also adds shared styling and content flags (sections, theme, wrap width, etc.) via addSharedTemplateFlags and
+// It also adds shared styling and content flags (sections, theme, wrap width, etc.) via addSharedContentFlags and
 // disables automatic flag sorting to preserve logical flag grouping in help output.
 //
 // Examples:
@@ -67,16 +65,16 @@ func init() {
 	// Output and format flags
 	convertCmd.Flags().
 		StringVarP(&outputFile, "output", "o", "", "Output file path for saving converted configuration (default: print to console)")
-	setFlagAnnotation(convertCmd.Flags(), "output", []string{"output"})
+	setFlagAnnotation(convertCmd.Flags(), "output", []flagCategory{categoryOutput})
 	convertCmd.Flags().
 		StringVarP(&format, "format", "f", "markdown", "Output format for conversion (markdown, json, yaml, text, html)")
-	setFlagAnnotation(convertCmd.Flags(), "format", []string{"output"})
+	setFlagAnnotation(convertCmd.Flags(), "format", []flagCategory{categoryOutput})
 	convertCmd.Flags().
 		BoolVar(&force, "force", false, "Force overwrite existing files without prompting for confirmation")
-	setFlagAnnotation(convertCmd.Flags(), "force", []string{"output"})
+	setFlagAnnotation(convertCmd.Flags(), "force", []flagCategory{categoryOutput})
 
 	// Add shared styling and content flags
-	addSharedTemplateFlags(convertCmd)
+	addSharedContentFlags(convertCmd)
 
 	// Add shared redact flag
 	addSharedRedactFlag(convertCmd)
@@ -106,9 +104,9 @@ func registerConvertFlagCompletions(cmd *cobra.Command) {
 var convertCmd = &cobra.Command{ //nolint:gochecknoglobals // Cobra command
 	Use:               "convert [file ...]",
 	Short:             "Convert OPNsense configuration files to structured formats.",
-	GroupID:           "core",
+	GroupID:           groupCore,
 	ValidArgsFunction: ValidXMLFiles,
-	PreRunE: func(cmd *cobra.Command, _ []string) error {
+	PreRunE: func(cmd *cobra.Command, args []string) error {
 		// Get logger from CommandContext for validation warnings
 		cmdCtx := GetCommandContext(cmd)
 		var cmdLogger *logging.Logger
@@ -119,6 +117,15 @@ var convertCmd = &cobra.Command{ //nolint:gochecknoglobals // Cobra command
 		// Normalize flags (apply side-effects like --no-wrap → wrap=0)
 		normalizeConvertFlags()
 
+		// Reject a single --output shared across several inputs. Each worker
+		// would write the same path and the last one would silently win.
+		if err := validateMultiFileOutput(
+			outputFile, len(args),
+			"omit --output so each report is written to its own auto-named file, or convert one file at a time",
+		); err != nil {
+			return err
+		}
+
 		// Validate flag combinations specific to convert command
 		if err := validateConvertFlags(cmd.Flags(), cmdLogger); err != nil {
 			return fmt.Errorf("convert command validation failed: %w", err)
@@ -126,288 +133,398 @@ var convertCmd = &cobra.Command{ //nolint:gochecknoglobals // Cobra command
 
 		return nil
 	},
-	Long: `The 'convert' command processes one or more OPNsense config.xml files and transforms
-its content into structured formats. Supported output formats include Markdown (default),
-JSON, YAML, plain text, and HTML. This allows for easier readability, documentation, and
-programmatic access to your firewall configuration.
+	Long: `The 'convert' command processes one or more OPNsense config.xml files and
+transforms them into structured documentation and export formats. Use convert
+when you need a human-readable report or a machine-readable export — not when
+you need compliance analysis or structural validation.
 
-  OUTPUT FORMATS:
-  The convert command supports multiple output formats:
+OUTPUT FORMATS:
+  Select the output encoding with --format:
 
-  Basic formats (use --format flag):
-    markdown                    - Standard markdown report (default)
-    json                        - JSON format output
-    yaml                        - YAML format output
-    text                        - Plain text output (markdown without formatting)
-    html                        - Self-contained HTML report for web viewing
+    markdown  - Rendered markdown report (default)
+    json      - JSON export for programmatic access
+    yaml      - YAML export for configuration management
+    text      - Plain text (markdown without ANSI formatting)
+    html      - Self-contained HTML report
 
-  Additional options:
-    --comprehensive             - Generate detailed, comprehensive reports
+CONTENT OPTIONS:
+  --comprehensive    - Emit every section, including rarely used ones
+  --include-tunables - Include all system tunables (default suppresses defaults)
+  --section          - Restrict output to specific sections (e.g. system,firewall)
+  --wrap / --no-wrap - Control text wrapping for terminal rendering
+  --redact           - Redact passwords, SNMP community strings, private keys
 
-  For security auditing and compliance checks, use the dedicated 'audit' command:
-    opnDossier audit config.xml --mode blue
+OUTPUT DESTINATION:
+  By default, output is printed to stdout. Use --output/-o to save to a file.
+  --output is rejected when several input files are given, because one
+  destination cannot hold several reports. Multi-file runs instead write each
+  report to its own file, auto-named after the input
+  (config.xml -> config.md, config.json, ...), the same way audit does.
+  Use --force to overwrite existing files without prompting. The prompt is
+  answered on stdin, so when stdin is not a terminal it cannot be answered and
+  --force is required instead.
 
-The convert command focuses on conversion only and does not perform validation.
-To validate your configuration files before conversion, use the 'validate' command.
+RELATED:
+  audit      - Convert plus compliance checks (STIG/SANS/firewall)
+  display    - Convert then render to the terminal in one step
+  validate   - Validate config.xml before conversion
+  sanitize   - Redact a config.xml before distribution`,
+	Example: `  # Convert configuration to markdown (default)
+  opndossier convert my_config.xml
 
-You can either print the generated output directly to the console or save it to a
-specified output file using the '--output' or '-o' flag. Use the '--format' or '-f'
-flag to specify the output format (markdown, json, yaml, text, or html).
+  # Convert to JSON format
+  opndossier convert my_config.xml --format json
 
-When processing multiple files, the --output flag will be ignored, and each output
-file will be named based on its input file with the appropriate extension
-(e.g., config.xml -> config.md, config.json, config.yaml, config.txt, or config.html).
+  # Convert to YAML and save to a file
+  opndossier convert my_config.xml -f yaml -o documentation.yaml
 
-Examples:
-  # Convert configuration to markdown (default)
-  opnDossier convert my_config.xml
+  # Convert to self-contained HTML
+  opndossier convert my_config.xml --format html -o report.html
 
-  # Convert 'my_config.xml' to JSON format
-  opnDossier convert my_config.xml --format json
+  # Generate a comprehensive report
+  opndossier convert my_config.xml --comprehensive
 
-  # Convert 'my_config.xml' to YAML and save to file
-  opnDossier convert my_config.xml -f yaml -o documentation.yaml
+  # Convert only specific sections
+  opndossier convert my_config.xml --section system,network
 
-  # Convert 'my_config.xml' to plain text
-  opnDossier convert my_config.xml --format text
-
-  # Convert 'my_config.xml' to self-contained HTML
-  opnDossier convert my_config.xml --format html -o report.html
-
-  # Generate comprehensive report
-  opnDossier convert my_config.xml --comprehensive
-
-  # Convert with specific sections
-  opnDossier convert my_config.xml --section system,network
-
-  # Convert with format and text wrapping
-  opnDossier convert my_config.xml --format json --wrap 120
-
-  # Convert without text wrapping
-  opnDossier convert my_config.xml --no-wrap
-
-  # Convert multiple files to JSON format
-  opnDossier convert config1.xml config2.xml --format json
-
-  # Convert 'backup_config.xml' with verbose logging
-  opnDossier --verbose convert backup_config.xml -f json
-
-  # Use environment variable to set default output location
-  OPNDOSSIER_OUTPUT_FILE=./docs/network.md opnDossier convert config.xml
-
-  # Force overwrite existing file without prompt
-  opnDossier convert config.xml -o output.md --force
+  # Convert multiple files to JSON (each output auto-named)
+  opndossier convert config1.xml config2.xml --format json
 
   # Redact sensitive fields (passwords, SNMP community strings, private keys)
-  opnDossier convert config.xml --format json --redact
+  opndossier convert config.xml --format json --redact
 
-  # Include all system tunables (including defaults) in the report
-  opnDossier convert config.xml --include-tunables
-
-  # Validate before converting (recommended workflow)
-  opnDossier validate config.xml && opnDossier convert config.xml -f json -o output.json`,
+  # Validate then convert (recommended workflow)
+  opndossier validate config.xml && opndossier convert config.xml -f json -o output.json`,
 	Args: cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := cmd.Context()
-		if ctx == nil {
-			ctx = context.Background()
+	RunE: runConvert,
+}
+
+// convertResult pairs a per-file outcome with its error slot so a single slice
+// entry can represent either success or failure. Preserves input ordering for
+// deterministic error aggregation and emission after wg.Wait().
+type convertResult struct {
+	output string
+	err    error
+}
+
+// runConvert processes one or more configuration files through the convert
+// pipeline. It parses and renders each file concurrently, then emits the
+// results serially in input order (GOTCHAS §8.3: concurrent generation, serial
+// emission — the same shape cmd/audit.go:runAudit uses).
+//
+// The output destination is resolved once, before any worker starts. Resolving
+// it per file inside the workers meant several of them could target one path,
+// and meant the overwrite prompt ran concurrently on stdin.
+func runConvert(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Validate device type flag early before any file processing
+	if err := validateDeviceType(); err != nil {
+		return err
+	}
+
+	// Get configuration and logger from CommandContext
+	cmdCtx := GetCommandContext(cmd)
+	if cmdCtx == nil {
+		return errors.New("command context not initialized")
+	}
+	cmdLogger := cmdCtx.Logger
+	cmdConfig := cmdCtx.Config
+
+	// Resolve format once: it is a single flag for the whole run, and the
+	// handler supplies the file extension the destination needs.
+	eff := buildEffectiveFormat(format, cmdConfig)
+	opt := buildConversionOptions(eff, cmdConfig)
+
+	// Validate the format once up front rather than per file. The registry
+	// lookup is the only thing that can reject it, and every file in the run
+	// shares the same --format value. The handler also supplies the extension a
+	// derived per-input destination needs.
+	handler, err := converter.DefaultRegistry.Get(string(opt.Format))
+	if err != nil {
+		return fmt.Errorf(
+			"%w: %q (supported: %s)",
+			ErrUnsupportedOutputFormat,
+			opt.Format,
+			strings.Join(converter.DefaultRegistry.ValidFormatsWithAliases(), ", "),
+		)
+	}
+
+	fileExt := handler.FileExtension()
+
+	multiFile := len(args) > 1
+
+	// A decline is returned rather than swallowed, so the command exits
+	// non-zero. Reporting success for a run that wrote nothing leaves a caller
+	// such as `convert config.xml && publish` unable to tell the two apart, and
+	// audit already treats a decline as an error.
+	destination, err := resolveConvertDestination(cmd, cmdConfig, cmdLogger, multiFile)
+	if err != nil {
+		return err
+	}
+
+	// Create a timeout context for file processing
+	timeoutCtx, cancel := context.WithTimeout(ctx, constants.DefaultProcessingTimeout)
+	defer cancel()
+
+	// Use a semaphore to limit concurrent file operations.
+	// This prevents resource exhaustion when processing many files.
+	maxConcurrent := max(runtime.NumCPU(), 1)
+	sem := make(chan struct{}, maxConcurrent)
+
+	// Buffer per-file outcomes indexed by input position so both errors and
+	// emission stay in input order regardless of completion order.
+	results := make([]convertResult, len(args))
+
+	var wg sync.WaitGroup
+
+	for i, filePath := range args {
+		wg.Add(1)
+
+		go func(idx int, fp string) {
+			defer wg.Done()
+
+			results[idx] = processConvertFile(timeoutCtx, fp, sem, opt, cmdLogger, cmdConfig)
+		}(i, filePath)
+	}
+
+	wg.Wait()
+
+	// Emit serially in input order. Concurrent writes to a single destination
+	// lose reports, and concurrent writes to stdout interleave once a report
+	// exceeds the pipe buffer.
+	var allErrors []error
+
+	for i, r := range results {
+		if r.err != nil {
+			allErrors = append(allErrors, r.err)
+
+			continue
 		}
 
-		// Validate device type flag early before any file processing
-		if err := validateDeviceType(); err != nil {
-			return err
+		// Every error here is collected, a decline included. A run that wrote
+		// fewer reports than it was given inputs must not exit 0; that is the
+		// same silent-incompleteness this branch set out to fix, reached a
+		// different way.
+		perInput, err := convertDestinationFor(cmd, cmdLogger, args[i], destination, multiFile, fileExt)
+		if err != nil {
+			allErrors = append(allErrors, fmt.Errorf("%s: %w", args[i], err))
+
+			continue
 		}
 
-		// Get configuration and logger from CommandContext
-		cmdCtx := GetCommandContext(cmd)
-		if cmdCtx == nil {
-			return errors.New("command context not initialized")
-		}
-		cmdLogger := cmdCtx.Logger
-		cmdConfig := cmdCtx.Config
-
-		var wg sync.WaitGroup
-		errs := make(chan error, len(args))
-
-		// Create a timeout context for file processing
-		timeoutCtx, cancel := context.WithTimeout(ctx, constants.DefaultProcessingTimeout)
-		defer cancel()
-
-		// Use a semaphore to limit concurrent file operations
-		// This prevents resource exhaustion when processing many files
-		maxConcurrent := max(runtime.NumCPU(), 1)
-		sem := make(chan struct{}, maxConcurrent)
-
-		for _, filePath := range args {
-			wg.Add(1)
-			go func(fp string) {
-				defer wg.Done()
-
-				// Acquire semaphore slot with context awareness
-				select {
-				case sem <- struct{}{}:
-					defer func() { <-sem }()
-				case <-timeoutCtx.Done():
-					errs <- timeoutCtx.Err()
-					return
-				}
-
-				// Create context-aware logger for this goroutine with input file field
-				ctxLogger := cmdLogger.WithContext(timeoutCtx).WithFields("input_file", fp)
-
-				// Sanitize the file path
-				cleanPath := filepath.Clean(fp)
-				if !filepath.IsAbs(cleanPath) {
-					// If not an absolute path, make it relative to the current working directory
-					var err error
-					cleanPath, err = filepath.Abs(cleanPath)
-					if err != nil {
-						errs <- fmt.Errorf("failed to get absolute path for %s: %w", fp, err)
-						return
-					}
-				}
-
-				// Read the file
-				file, err := os.Open(cleanPath)
-				if err != nil {
-					errs <- fmt.Errorf("failed to open file %s: %w", fp, err)
-					return
-				}
-				defer func() {
-					if cerr := file.Close(); cerr != nil {
-						ctxLogger.Error("failed to close file", "error", cerr)
-					}
-				}()
-
-				// Parse the XML and convert to platform-agnostic device model
-				ctxLogger.Debug("Parsing configuration file")
-				device, warnings, err := parser.NewFactory(cfgparser.NewXMLParser()).
-					CreateDevice(timeoutCtx, file, resolveDeviceType(), false)
-				if err != nil {
-					ctxLogger.Error("Failed to parse configuration", "error", err)
-					// Enhanced error handling for different error types
-					if cfgparser.IsParseError(err) {
-						if parseErr := cfgparser.GetParseError(err); parseErr != nil {
-							ctxLogger.Error(
-								"XML syntax error detected",
-								"line",
-								parseErr.Line,
-								"message",
-								parseErr.Message,
-							)
-						}
-					}
-					if cfgparser.IsValidationError(err) {
-						ctxLogger.Error("Configuration validation failed")
-					}
-					errs <- fmt.Errorf("failed to parse configuration from %s: %w", fp, err)
-					return
-				}
-				ctxLogger.Debug("Configuration parsed successfully")
-
-				if cmdConfig == nil || !cmdConfig.IsQuiet() {
-					for _, w := range warnings {
-						ctxLogger.Warn("conversion warning",
-							"field", w.Field,
-							"message", w.Message,
-							"severity", w.Severity,
-						)
-					}
-				}
-
-				// Build options for conversion with precedence: CLI flags > env vars > config > defaults
-				eff := buildEffectiveFormat(format, cmdConfig)
-				opt := buildConversionOptions(eff, cmdConfig)
-				auditOpts := buildAuditOptions()
-
-				// Convert using the new markdown generator
-				var output string
-				var fileExt string
-
-				ctxLogger.Debug(
-					"Converting with options",
-					"format",
-					opt.Format,
-					"theme",
-					opt.Theme,
-					"sections",
-					opt.Sections,
-				)
-
-				// Generate output based on format
-				output, err = generateOutputByFormat(timeoutCtx, device, opt, auditOpts, ctxLogger)
-				if err != nil {
-					ctxLogger.Error("Failed to convert", "error", err)
-					errs <- fmt.Errorf("failed to convert from %s: %w", fp, err)
-					return
-				}
-
-				// Determine file extension from the registry
-				handler, err := converter.DefaultRegistry.Get(string(opt.Format))
-				if err != nil {
-					ctxLogger.Error("format passed validation but registry lookup failed",
-						"format", opt.Format, "error", err)
-					errs <- fmt.Errorf("internal error determining file extension for %q: %w", opt.Format, err)
-
-					return
-				}
-
-				fileExt = handler.FileExtension()
-
-				ctxLogger.Debug("Conversion completed successfully")
-
-				// Determine output path with smart naming and overwrite protection
-				actualOutputFile, err := determineOutputPath(fp, outputFile, fileExt, cmdConfig, force)
-				if err != nil {
-					ctxLogger.Error("Failed to determine output path", "error", err)
-					errs <- fmt.Errorf("failed to determine output path for %s: %w", fp, err)
-					return
-				}
-
-				// Create enhanced logger with output file information
-				var enhancedLogger *logging.Logger
-				if actualOutputFile != "" {
-					enhancedLogger = ctxLogger.WithFields("output_file", actualOutputFile)
-				} else {
-					enhancedLogger = ctxLogger.WithFields("output_mode", "stdout")
-				}
-
-				// Export or print the output
-				if actualOutputFile != "" {
-					enhancedLogger.Debug("Exporting to file")
-					e := export.NewFileExporter(ctxLogger)
-					if err := e.Export(timeoutCtx, output, actualOutputFile); err != nil {
-						enhancedLogger.Error("Failed to export output", "error", err)
-						errs <- fmt.Errorf("failed to export output to %s: %w", actualOutputFile, err)
-						return
-					}
-					// Output exported successfully (no logging to avoid corrupting output)
-				} else {
-					enhancedLogger.Debug("Outputting to stdout")
-
-					if _, err := fmt.Fprint(cmd.OutOrStdout(), output); err != nil {
-						enhancedLogger.Error("Failed to write output to stdout", "error", err)
-						errs <- fmt.Errorf("failed to write output to stdout: %w", err)
-
-						return
-					}
-				}
-
-				// Conversion process completed successfully (no logging to avoid corrupting output)
-			}(filePath)
-		}
-
-		wg.Wait()
-		close(errs)
-
-		// Collect all errors and join them using errors.Join for proper unwrapping
-		var allErrors []error
-		for err := range errs {
+		if err := emitConvertOutput(ctx, cmd, cmdLogger, r.output, perInput); err != nil {
 			allErrors = append(allErrors, err)
 		}
+	}
 
-		return errors.Join(allErrors...)
-	},
+	return errors.Join(allErrors...)
+}
+
+// convertDestinationFor resolves where one report goes.
+//
+// Single-file runs use the destination already settled by
+// resolveConvertDestination. Multi-file runs derive a per-input path instead, so
+// each report lands in its own file. Concatenating them on stdout is not a
+// usable alternative: markdown and text merge readably, but a second JSON
+// document produces "}{" and fails to parse, two HTML documents give two
+// doctypes, and two YAML documents without separators parse as one mapping in
+// which the later keys silently replace the earlier ones.
+//
+// Overwrite protection runs here, in the serialized emission loop, rather than
+// up front, matching cmd/audit_output.go. Prompting is safe here because
+// emission runs on the parent goroutine; calling it from a worker would race
+// the other workers for stdin.
+func convertDestinationFor(
+	cmd *cobra.Command,
+	ctxLogger *logging.Logger,
+	inputFile, destination string,
+	multiFile bool,
+	fileExt string,
+) (string, error) {
+	if !multiFile {
+		return destination, nil
+	}
+
+	derived := derivePerInputOutputPath(inputFile, "", fileExt)
+
+	if err := confirmOverwrite(os.Stdin, cmd.ErrOrStderr(), derived, force); err != nil {
+		return "", err
+	}
+
+	ctxLogger.Debug("Derived per-input output path", "input_file", inputFile, "output_file", derived)
+
+	return derived, nil
+}
+
+// resolveConvertDestination determines the single output path for the run and
+// settles overwrite protection before any work happens.
+//
+// An empty return means stdout, which is the single-file default. Multi-file
+// runs do not use this destination at all: --output is rejected in PreRunE and a
+// configured output_file is ignored here, because one destination cannot hold
+// several reports. Each of those reports gets its own path from
+// convertDestinationFor instead.
+func resolveConvertDestination(
+	cmd *cobra.Command,
+	cfg *config.Config,
+	logger *logging.Logger,
+	multiFile bool,
+) (string, error) {
+	if multiFile {
+		if cfg != nil && cfg.OutputFile != "" {
+			logger.Info(
+				"Configured output_file ignored for multi-file convert; each report is written to its own auto-named file",
+				"configured_output",
+				cfg.OutputFile,
+			)
+		}
+
+		return "", nil
+	}
+
+	destination := determineOutputPath(outputFile, cfg)
+	if err := confirmOverwrite(os.Stdin, cmd.ErrOrStderr(), destination, force); err != nil {
+		return "", err
+	}
+
+	return destination, nil
+}
+
+// processConvertFile runs the convert pipeline for a single input file under
+// the shared concurrency semaphore and returns the rendered report. It performs
+// no I/O emission, so it is safe to call from a goroutine; the parent writes
+// the buffered results in input order (GOTCHAS §8.3).
+//
+// A context timeout or cancellation before the semaphore is acquired returns
+// the ctx error wrapped with the input file path. All subsequent failures are
+// wrapped with the input file path so aggregated errors identify the offending
+// file.
+func processConvertFile(
+	ctx context.Context,
+	fp string,
+	sem chan struct{},
+	opt converter.Options,
+	cmdLogger *logging.Logger,
+	cmdConfig *config.Config,
+) convertResult {
+	// Acquire semaphore slot with context awareness
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-ctx.Done():
+		return convertResult{err: fmt.Errorf("%s: %w", fp, ctx.Err())}
+	}
+
+	ctxLogger := cmdLogger.WithFields("input_file", fp)
+
+	device, err := parseConvertInput(ctx, fp, ctxLogger, cmdConfig)
+	if err != nil {
+		return convertResult{err: err}
+	}
+
+	ctxLogger.Debug("Converting with options", "format", opt.Format, "theme", opt.Theme, "sections", opt.Sections)
+
+	output, err := generateWithProgrammaticGenerator(ctx, device, opt, ctxLogger)
+	if err != nil {
+		ctxLogger.Error("Failed to convert", "error", err)
+
+		return convertResult{err: fmt.Errorf("failed to convert from %s: %w", fp, err)}
+	}
+
+	ctxLogger.Debug("Conversion completed successfully")
+
+	return convertResult{output: output}
+}
+
+// parseConvertInput cleans fp, opens the file, and parses it into a CommonDevice.
+// All parse-side logging (Debug success, Warn per conversion warning, Error
+// with detailed parse/validation context) stays here so processConvertFile
+// remains a straightforward orchestrator. Distinct from diff.go's
+// parseConfigFile which has different logging/warning semantics.
+func parseConvertInput(
+	ctx context.Context,
+	fp string,
+	ctxLogger *logging.Logger,
+	cmdConfig *config.Config,
+) (*common.CommonDevice, error) {
+	cleanPath := filepath.Clean(fp)
+	if !filepath.IsAbs(cleanPath) {
+		abs, err := filepath.Abs(cleanPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get absolute path for %s: %w", fp, err)
+		}
+		cleanPath = abs
+	}
+
+	file, err := os.Open(cleanPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file %s: %w", fp, err)
+	}
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			ctxLogger.Error("failed to close file", "error", cerr)
+		}
+	}()
+
+	ctxLogger.Debug("Parsing configuration file")
+	device, warnings, err := parser.NewFactory(cfgparser.NewXMLParser()).
+		CreateDevice(ctx, file, resolveDeviceType(), false)
+	if err != nil {
+		ctxLogger.Error("Failed to parse configuration", "error", err)
+		if cfgparser.IsParseError(err) {
+			if parseErr := cfgparser.GetParseError(err); parseErr != nil {
+				ctxLogger.Error("XML syntax error detected",
+					"line", parseErr.Line, "message", parseErr.Message)
+			}
+		}
+		if cfgparser.IsValidationError(err) {
+			ctxLogger.Error("Configuration validation failed")
+		}
+		return nil, fmt.Errorf("failed to parse configuration from %s: %w", fp, err)
+	}
+
+	ctxLogger.Debug("Configuration parsed successfully")
+	if cmdConfig == nil || !cmdConfig.IsQuiet() {
+		for _, w := range warnings {
+			ctxLogger.Warn("conversion warning",
+				"field", w.Field, "message", w.Message, "severity", w.Severity)
+		}
+	}
+	return device, nil
+}
+
+// emitConvertOutput writes the converted report to actualOutputFile when
+// non-empty, otherwise to cmd's stdout. The enhanced logger tags every log
+// line with either output_file or output_mode=stdout so CLI logs stay
+// attributable when multiple inputs run concurrently.
+func emitConvertOutput(
+	ctx context.Context,
+	cmd *cobra.Command,
+	ctxLogger *logging.Logger,
+	output, actualOutputFile string,
+) error {
+	if actualOutputFile != "" {
+		enhancedLogger := ctxLogger.WithFields("output_file", actualOutputFile)
+		enhancedLogger.Debug("Exporting to file")
+		e := export.NewFileExporter(ctxLogger)
+		if err := e.Export(ctx, output, actualOutputFile); err != nil {
+			enhancedLogger.Error("Failed to export output", "error", err)
+			return fmt.Errorf("failed to export output to %s: %w", actualOutputFile, err)
+		}
+		return nil
+	}
+
+	enhancedLogger := ctxLogger.WithFields("output_mode", "stdout")
+	enhancedLogger.Debug("Outputting to stdout")
+	if _, err := fmt.Fprint(cmd.OutOrStdout(), output); err != nil {
+		enhancedLogger.Error("Failed to write output to stdout", "error", err)
+		return fmt.Errorf("failed to write output to stdout: %w", err)
+	}
+	return nil
 }
 
 // buildEffectiveFormat determines the output format to use, giving precedence to the CLI flag, then the configuration file, and defaulting to "markdown" if neither is set.
@@ -502,110 +619,46 @@ func buildConversionOptions(
 	return opt
 }
 
-// buildAuditOptions constructs an audit.Options value from the shared CLI flag globals.
-// TODO(#457): Remove — shared audit globals are no longer bound to CLI flags.
-func buildAuditOptions() audit.Options {
-	opts := audit.Options{
-		AuditMode:       sharedAuditMode,
-		SelectedPlugins: sharedSelectedPlugins,
-	}
-
-	// Plugin directory: CLI flag is the source. When set, mark as explicit
-	// so that a missing directory produces an error instead of being silently skipped.
-	if sharedPluginDir != "" {
-		opts.PluginDir = sharedPluginDir
-		opts.ExplicitPluginDir = true
-	}
-
-	return opts
-}
-
-// determineOutputPath determines the output file path with smart naming and overwrite protection.
-// It handles the following scenarios:
-// 1. If outputFile is specified, use it (with overwrite protection)
-// 2. If multiple files are being processed, use input filename with appropriate extension
-// 3. If config has output_file but no CLI flag, use input filename with appropriate extension
-// 4. If no output specified, return empty string (stdout)
+// determineOutputPath resolves the output destination. An empty return means
+// stdout. Precedence is --output, then a configured output_file.
 //
-// The function ensures no automatic directory creation and provides overwrite prompts
-// unless the force flag is set.
-func determineOutputPath(inputFile, outputFile, fileExt string, cfg *config.Config, force bool) (string, error) {
-	// If no output file specified, return empty string for stdout
-	if outputFile == "" && (cfg == nil || cfg.OutputFile == "") {
-		return "", nil
-	}
-
-	var actualOutputFile string
-
-	// Determine the output file path using switch statement
+// Overwrite protection is deliberately not applied here. Callers invoke
+// confirmOverwrite themselves, so convert can settle it once before starting
+// concurrent work rather than from inside a worker.
+//
+// This previously accepted the input filename and extension to auto-name the
+// destination, but that branch was unreachable: a run with neither --output nor
+// a configured output_file returns early for stdout, so the switch never hit its
+// default. Callers wanting a derived per-input path build it themselves, as
+// derivePerInputOutputPath does.
+func determineOutputPath(outputFile string, cfg *config.Config) string {
 	switch {
 	case outputFile != "":
-		// CLI flag takes precedence
-		actualOutputFile = outputFile
+		return outputFile
 	case cfg != nil && cfg.OutputFile != "":
-		// Use config value if CLI flag not specified
-		actualOutputFile = cfg.OutputFile
+		return cfg.OutputFile
 	default:
-		// Use input filename with appropriate extension as default
-		base := filepath.Base(inputFile)
-		ext := filepath.Ext(base)
-		actualOutputFile = strings.TrimSuffix(base, ext) + fileExt
+		return ""
 	}
-
-	// Check if file already exists and handle overwrite protection
-
-	if _, err := os.Stat(actualOutputFile); err == nil {
-		// File exists, check if we should overwrite
-		if !force {
-			// Prompt user for confirmation (using stderr to avoid interfering with piped output)
-
-			fmt.Fprintf(os.Stderr, "File '%s' already exists. Overwrite? (y/N): ", actualOutputFile)
-
-			// Use bufio.NewReader to correctly capture entire input line including spaces
-			reader := bufio.NewReader(os.Stdin)
-
-			response, err := reader.ReadString('\n')
-			if err != nil {
-				return "", fmt.Errorf("failed to read user input: %w", err)
-			}
-
-			// Trim whitespace and newline characters
-			response = strings.TrimSpace(response)
-
-			// Empty input defaults to "N" (no)
-			if response == "" {
-				response = "N"
-			}
-
-			// Only proceed if user explicitly confirms with 'y' or 'Y'
-			if response != "y" && response != "Y" {
-				return "", ErrOperationCancelled
-			}
-		}
-	}
-
-	return actualOutputFile, nil
 }
 
 // generateOutputByFormat generates the document output in the requested format using the programmatic generator.
 // Supported formats are "markdown" (or "md"), "json", "yaml" (or "yml"), "text" (or "txt"), and "html" (or "htm").
-// It returns the rendered output string, or an error if the format is unsupported or generation fails.
+// It returns the rendered output, the resolved FormatHandler (for file-extension lookups), or an error
+// if the format is unsupported or generation fails.
+//
+// The handler is resolved via a single DefaultRegistry.Get call — callers should NOT perform their own
+// lookup, as that would duplicate work and invent an impossible-by-construction error branch.
 func generateOutputByFormat(
 	ctx context.Context,
 	device *common.CommonDevice,
 	opt converter.Options,
-	auditOpts audit.Options,
 	logger *logging.Logger,
-) (string, error) {
-	// TODO(#457): Remove audit parameter — unreachable since audit flags were
-	// removed from convert. The auditOpts.AuditMode is always empty.
-	if auditOpts.AuditMode != "" {
-		return handleAuditMode(ctx, device, auditOpts, opt, logger)
-	}
-
-	// Validate format via registry before generating
-	if _, err := converter.DefaultRegistry.Get(string(opt.Format)); err != nil {
-		return "", fmt.Errorf(
+) (string, converter.FormatHandler, error) {
+	// Validate format via registry once and reuse the resolved handler.
+	handler, err := converter.DefaultRegistry.Get(string(opt.Format))
+	if err != nil {
+		return "", nil, fmt.Errorf(
 			"%w: %q (supported: %s)",
 			ErrUnsupportedOutputFormat,
 			opt.Format,
@@ -613,9 +666,13 @@ func generateOutputByFormat(
 		)
 	}
 
-	// Use programmatic generator for all formats
-	// The HybridGenerator handles markdown (via builder), JSON, YAML, text, and HTML natively
-	return generateWithProgrammaticGenerator(ctx, device, opt, logger)
+	// Use programmatic generator for all formats.
+	// The HybridGenerator handles markdown (via builder), JSON, YAML, text, and HTML natively.
+	output, err := generateWithProgrammaticGenerator(ctx, device, opt, logger)
+	if err != nil {
+		return "", nil, err
+	}
+	return output, handler, nil
 }
 
 // generateWithProgrammaticGenerator creates and uses a generator that produces output using the programmatic Markdown builder.

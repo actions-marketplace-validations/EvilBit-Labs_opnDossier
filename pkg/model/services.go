@@ -1,5 +1,7 @@
 package model
 
+import "strings"
+
 // DHCPAdvancedV4 contains advanced DHCPv4 configuration fields including alias/reject,
 // DNS overrides, protocol timing, send/request/required options, and config overrides.
 type DHCPAdvancedV4 struct {
@@ -161,8 +163,16 @@ type DHCPScope struct {
 	Range DHCPRange `json:"range" yaml:"range,omitempty"`
 	// Gateway is the default gateway advertised to DHCP clients.
 	Gateway string `json:"gateway,omitempty" yaml:"gateway,omitempty"`
-	// DNSServer is the DNS server advertised to DHCP clients.
+	// DNSServer is the first DNS server advertised to DHCP clients.
+	//
+	// Deprecated: a scope can advertise more than one and this reports only the
+	// first. Use DNSServers. Retained through at least one minor release per
+	// the deprecation policy in docs/development/public-api.md.
 	DNSServer string `json:"dnsServer,omitempty" yaml:"dnsServer,omitempty"`
+	// DNSServers lists the DNS servers advertised to DHCP clients, in config
+	// order. ISC repeats <dnsserver> per server and Kea uses a comma-separated
+	// domain-name-servers option, so both can name more than one.
+	DNSServers []string `json:"dnsServers,omitempty" yaml:"dnsServers,omitempty"`
 	// NTPServer is the NTP server advertised to DHCP clients.
 	NTPServer string `json:"ntpServer,omitempty" yaml:"ntpServer,omitempty"`
 	// WINSServer is the WINS/NetBIOS name server advertised to DHCP clients.
@@ -178,6 +188,36 @@ type DHCPScope struct {
 	// AdvancedV6 contains advanced DHCPv6 configuration (tracking, identity association, auth, overrides).
 	// Nil when no advanced DHCPv6 config is present.
 	AdvancedV6 *DHCPAdvancedV6 `json:"advancedV6,omitempty" yaml:"advancedV6,omitempty"`
+}
+
+// SetDNSServers records the DNS servers advertised to this scope, keeping the
+// deprecated DNSServer field in sync with the first entry so the two cannot
+// drift.
+//
+// Entries are trimmed and empty ones dropped, and an all-empty input clears the
+// field to nil rather than leaving a slice of blanks. Both vendors write a
+// self-closing <dnsserver/> placeholder when nothing is configured, which
+// unmarshals to "" (GOTCHAS 3.4); keeping those would publish phantom entries
+// that omitempty cannot suppress, and a placeholder ordered ahead of a real
+// server would put "" in DNSServer and report the scope as having no resolver.
+// Matches splitNonEmpty's convention in the OPNsense converter.
+//
+// The caller's slice is never retained: entries are appended into a fresh one,
+// so a later write to servers[0] cannot change DNSServers while DNSServer keeps
+// the old value.
+func (s *DHCPScope) SetDNSServers(servers []string) {
+	s.DNSServers = nil
+
+	for _, server := range servers {
+		if trimmed := strings.TrimSpace(server); trimmed != "" {
+			s.DNSServers = append(s.DNSServers, trimmed)
+		}
+	}
+
+	s.DNSServer = ""
+	if len(s.DNSServers) > 0 {
+		s.DNSServer = s.DNSServers[0]
+	}
 }
 
 // DHCPRange represents the start and end of a DHCP address range.
@@ -230,14 +270,49 @@ type DNSConfig struct {
 	DNSMasq DNSMasqConfig `json:"dnsMasq" yaml:"dnsMasq,omitempty"`
 }
 
-// UnboundConfig contains Unbound DNS resolver configuration.
+// UnboundConfig contains Unbound DNS resolver configuration. The first three
+// fields (Enabled, DNSSEC, DNSSECStripped) are sourced from the legacy <unbound>
+// element. The remaining fields are sourced from the MVC <OPNsense><unboundplus>
+// element; the OPNsense-specific converter handles the split.
 type UnboundConfig struct {
+	// -- Legacy <unbound> (canonical) --
+
 	// Enabled indicates whether the Unbound resolver is active.
 	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 	// DNSSEC enables DNSSEC validation.
 	DNSSEC bool `json:"dnssec,omitempty" yaml:"dnssec,omitempty"`
 	// DNSSECStripped enables DNSSEC stripped mode.
 	DNSSECStripped bool `json:"dnssecStripped,omitempty" yaml:"dnssecStripped,omitempty"`
+
+	// -- MVC <OPNsense><unboundplus><advanced> --
+
+	// PrivateAddress lists CIDR prefixes or IPs supplied to Unbound's
+	// `private-address` directive. When populated, Unbound rejects DNS
+	// responses that resolve to these ranges for public domains — the DNS
+	// rebind protection mechanism. The converter validates each entry (drops
+	// and warns on unparseable values); consumers may still want to re-verify
+	// before acting on them.
+	PrivateAddress []string `json:"privateAddress,omitempty" yaml:"privateAddress,omitempty"`
+	// PrivateAddressConfigured distinguishes "the MVC <privateaddress> element
+	// was absent from config.xml" (false — rebind-protection status is Unknown,
+	// common on older installs or fresh setups) from "the element was present
+	// but empty, or filtered down to empty after validation" (true — rebind
+	// protection is explicitly not in force). Consumers evaluating rebind
+	// protection should gate on this before acting on PrivateAddress length.
+	PrivateAddressConfigured bool `json:"privateAddressConfigured,omitempty" yaml:"privateAddressConfigured,omitempty"`
+	// HideIdentity corresponds to Unbound's `hide-identity` directive.
+	// When true, Unbound does not reveal its server identity in responses.
+	HideIdentity bool `json:"hideIdentity,omitempty" yaml:"hideIdentity,omitempty"`
+	// HideVersion corresponds to Unbound's `hide-version` directive.
+	// When true, Unbound does not reveal its version string.
+	HideVersion bool `json:"hideVersion,omitempty" yaml:"hideVersion,omitempty"`
+	// LogQueries indicates whether Unbound logs each incoming query.
+	LogQueries bool `json:"logQueries,omitempty" yaml:"logQueries,omitempty"`
+	// LogReplies indicates whether Unbound logs each outgoing reply.
+	LogReplies bool `json:"logReplies,omitempty" yaml:"logReplies,omitempty"`
+	// Prefetch enables Unbound's prefetch behavior (cache warming for
+	// messages close to expiration).
+	Prefetch bool `json:"prefetch,omitempty" yaml:"prefetch,omitempty"`
 }
 
 // DNSMasqConfig contains dnsmasq forwarder configuration.

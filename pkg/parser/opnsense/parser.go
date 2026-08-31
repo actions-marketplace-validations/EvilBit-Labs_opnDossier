@@ -1,5 +1,26 @@
 // Package opnsense provides an OPNsense-specific parser and converter that
-// transforms schema.OpnSenseDocument into the platform-agnostic CommonDevice.
+// transforms [schema.OpnSenseDocument] (pkg/schema/opnsense) into the
+// platform-agnostic [common.CommonDevice] (pkg/model). The bracketed names
+// match the import aliases used in this file.
+//
+// # Registration
+//
+// This package self-registers its [Parser] with the global
+// [parser.DefaultRegistry] under the device type name "opnsense" from an
+// init() function. Consumers that want the OPNsense parser available through
+// [parser.Factory] must add a blank import:
+//
+//	import _ "github.com/EvilBit-Labs/opnDossier/pkg/parser/opnsense"
+//
+// See [parser] for the full registration contract.
+//
+// # Dependencies
+//
+// This package has no internal/ dependencies in production code; it depends
+// only on other public pkg/ packages plus the standard library. The
+// [parser.OPNsenseXMLDecoder] is injected at construction so this package can
+// stay on the public pkg/ side of the import boundary while still using the
+// internal/cfgparser decoder when wired from the CLI layer.
 package opnsense
 
 import (
@@ -16,13 +37,13 @@ import (
 // files. The XML decoder is injected at construction to keep this package
 // free of internal/ imports.
 type Parser struct {
-	decoder parser.XMLDecoder
+	decoder parser.OPNsenseXMLDecoder
 }
 
 // NewParser returns a new OPNsense Parser backed by the given XML decoder.
 // The decoder is typically cfgparser.NewXMLParser(), wired at the application
 // layer.
-func NewParser(decoder parser.XMLDecoder) *Parser {
+func NewParser(decoder parser.OPNsenseXMLDecoder) *Parser {
 	return &Parser{decoder: decoder}
 }
 
@@ -65,7 +86,7 @@ func toCommonDevice(doc *schema.OpnSenseDocument) (*common.CommonDevice, []commo
 
 // NewParserFactory returns a new DeviceParser configured for OPNsense devices.
 // It satisfies the factory function signature required by DeviceParserRegistry.
-func NewParserFactory(decoder parser.XMLDecoder) parser.DeviceParser {
+func NewParserFactory(decoder parser.OPNsenseXMLDecoder) parser.DeviceParser {
 	return NewParser(decoder)
 }
 

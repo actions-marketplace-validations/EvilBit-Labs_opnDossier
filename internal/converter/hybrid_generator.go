@@ -7,12 +7,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/EvilBit-Labs/opnDossier/internal/converter/builder"
 	"github.com/EvilBit-Labs/opnDossier/internal/logging"
 	common "github.com/EvilBit-Labs/opnDossier/pkg/model"
 	"gopkg.in/yaml.v3"
 )
+
+// auditSectionSeparator is written between the base report body and the
+// appended audit section when compliance data is present.
+const auditSectionSeparator = "\n\n"
 
 // Generator interface for creating documentation in various formats.
 type Generator interface {
@@ -49,7 +54,7 @@ type reportGenerator interface {
 	SetIncludeTunables(v bool)
 	// SetFailuresOnly configures whether only non-compliant controls are shown in audit reports.
 	SetFailuresOnly(v bool)
-	// BuildAuditSection builds the compliance audit section from the device's ComplianceChecks.
+	// BuildAuditSection builds the compliance audit section from the device's ComplianceResults.
 	BuildAuditSection(data *common.CommonDevice) string
 	// BuildStandardReport generates a standard configuration report.
 	BuildStandardReport(data *common.CommonDevice) (string, error)
@@ -131,9 +136,30 @@ func handlerForFormat(format string) (FormatHandler, error) {
 // Generate creates documentation in the specified format from the provided OPNsense configuration.
 // Supported formats: markdown (default), json, yaml, text, and html.
 //
-// For memory-efficient streaming output, use GenerateToWriter instead.
-// Generate is preferred when you need the output as a string for further processing.
-func (g *HybridGenerator) Generate(_ context.Context, data *common.CommonDevice, opts Options) (string, error) {
+// Memory tradeoff (JSON/YAML): Generate pays roughly 2x peak memory for JSON and
+// YAML output because the marshaled byte slice and its string(...) conversion both
+// live on the heap simultaneously. For markdown, text, and HTML the builder
+// already accumulates a string, so there is no additional penalty versus
+// GenerateToWriter. Prefer GenerateToWriter once output approaches ~5MB.
+//
+// Use Generate when:
+//   - You need the result as an in-memory string (to embed in another structure,
+//     pass to a templating system, return from an API handler, or display in a TUI).
+//   - The caller does not have an io.Writer to hand off (no file handle, no
+//     http.ResponseWriter, no buffer already in scope).
+//   - Output is small and the ergonomics of a return value matter more than peak memory.
+//
+// For streaming output, writing directly to a file/socket/HTTP response, or
+// composing with io.Copy / io.MultiWriter, see GenerateToWriter.
+func (g *HybridGenerator) Generate(ctx context.Context, data *common.CommonDevice, opts Options) (string, error) {
+	// Honor ctx at entry so a pre-canceled ctx aborts before any work is done.
+	// Per-subsystem boundary checks are applied inside the format-specific
+	// generators (e.g., between report body and audit section in markdown).
+	// Full ctx propagation through the builder layer is deferred to v1.6.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
 	if data == nil {
 		return "", ErrNilDevice
 	}
@@ -147,25 +173,47 @@ func (g *HybridGenerator) Generate(_ context.Context, data *common.CommonDevice,
 		return "", err
 	}
 
-	return handler.Generate(g, data, opts)
+	// Post-validation boundary: cancellation between validation and dispatch.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	return handler.Generate(ctx, g, data, opts)
 }
 
 // GenerateToWriter writes documentation directly to the provided io.Writer.
-// This is more memory-efficient than Generate() as it streams output section-by-section
-// without accumulating the entire output in memory first.
 //
 // Supported formats: markdown (default), json, yaml, text, and html.
-// For markdown format, sections are written incrementally as they are generated.
-// For JSON, YAML, text, and HTML formats, the full output is generated then written
-// (these formats require complete document serialization or post-processing).
+// For markdown, sections are written incrementally as they are generated.
+// For JSON and YAML, an encoder writes directly to w — this avoids the 2x
+// peak-memory hit that Generate incurs (marshaled bytes plus their string(...)
+// conversion both resident at once). For text and HTML, the full output is
+// produced then written because those formats require complete document
+// serialization or post-processing.
 //
-// Use Generate() instead when you need the output as a string for further processing.
+// Use GenerateToWriter when:
+//   - You are writing directly to a file, socket, or HTTP response.
+//   - Output may be large (>5MB for JSON/YAML) and peak memory matters.
+//   - You want partial-output-on-error semantics: bytes already flushed to w
+//     remain visible if encoding fails partway through.
+//   - You are composing with io.Copy, io.MultiWriter, or other writer patterns.
+//
+// For an in-memory string — for example to embed in another structure, feed a
+// templating system, or return from an API handler — see Generate.
 func (g *HybridGenerator) GenerateToWriter(
-	_ context.Context,
+	ctx context.Context,
 	w io.Writer,
 	data *common.CommonDevice,
 	opts Options,
 ) error {
+	// Honor ctx at entry so a pre-canceled ctx aborts before any work is done.
+	// Per-subsystem boundary checks are applied inside the format-specific
+	// generators (e.g., between report body and audit section in markdown).
+	// Full ctx propagation through the builder layer is deferred to v1.6.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if data == nil {
 		return ErrNilDevice
 	}
@@ -179,12 +227,25 @@ func (g *HybridGenerator) GenerateToWriter(
 		return err
 	}
 
-	return handler.GenerateToWriter(g, w, data, opts)
+	// Post-validation boundary: cancellation between validation and dispatch.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	return handler.GenerateToWriter(ctx, g, w, data, opts)
 }
 
 // generateMarkdown generates markdown output using the programmatic builder.
 // Not safe for concurrent use — MarkdownBuilder is per-instance, not shared.
-func (g *HybridGenerator) generateMarkdown(data *common.CommonDevice, opts Options) (string, error) {
+//
+// ctx is checked at the per-subsystem boundary between report body composition
+// and the compliance audit section append. The builder itself does not yet
+// receive ctx — full propagation is deferred to v1.6.
+func (g *HybridGenerator) generateMarkdown(
+	ctx context.Context,
+	data *common.CommonDevice,
+	opts Options,
+) (string, error) {
 	g.logger.Debug("Using programmatic markdown generation")
 
 	if g.builder == nil {
@@ -209,11 +270,23 @@ func (g *HybridGenerator) generateMarkdown(data *common.CommonDevice, opts Optio
 		return "", err
 	}
 
-	// Append audit section when compliance data is present
-	if target.ComplianceChecks != nil {
+	// Per-subsystem boundary: between report body and audit section.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	// Append audit section when compliance data is present. Use strings.Builder
+	// with Grow() pre-sizing instead of += concatenation so we do not copy the
+	// (potentially 2MB+) report body once per append (PERF-M7).
+	if target.ComplianceResults != nil {
 		auditSection := g.builder.BuildAuditSection(target)
 		if auditSection != "" {
-			report += "\n\n" + auditSection
+			var b strings.Builder
+			b.Grow(len(report) + len(auditSectionSeparator) + len(auditSection))
+			b.WriteString(report)
+			b.WriteString(auditSectionSeparator)
+			b.WriteString(auditSection)
+			return b.String(), nil
 		}
 	}
 
@@ -221,7 +294,13 @@ func (g *HybridGenerator) generateMarkdown(data *common.CommonDevice, opts Optio
 }
 
 // generateMarkdownToWriter writes markdown output directly to the writer.
+//
+// ctx is checked at the per-subsystem boundary between report body composition
+// and the compliance audit section append (in both the streaming and
+// non-streaming fallback paths). The builder itself does not yet receive ctx —
+// full propagation is deferred to v1.6.
 func (g *HybridGenerator) generateMarkdownToWriter(
+	ctx context.Context,
 	w io.Writer,
 	data *common.CommonDevice,
 	opts Options,
@@ -239,34 +318,7 @@ func (g *HybridGenerator) generateMarkdownToWriter(
 	// Check if builder supports SectionWriter interface for streaming
 	sectionWriter, ok := g.builder.(builder.SectionWriter)
 	if !ok {
-		// Fallback to string-based generation using the already-prepared target
-		g.logger.Debug("Builder does not support SectionWriter, falling back to string generation")
-
-		var output string
-		var err error
-
-		switch {
-		case opts.Comprehensive:
-			output, err = g.builder.BuildComprehensiveReport(target)
-		default:
-			output, err = g.builder.BuildStandardReport(target)
-		}
-
-		if err != nil {
-			return err
-		}
-
-		// Append audit section when compliance data is present
-		if target.ComplianceChecks != nil {
-			auditSection := g.builder.BuildAuditSection(target)
-			if auditSection != "" {
-				output += "\n\n" + auditSection
-			}
-		}
-
-		_, err = io.WriteString(w, output)
-
-		return err
+		return g.generateMarkdownFallback(ctx, w, target, opts)
 	}
 
 	// Use streaming writer
@@ -283,11 +335,21 @@ func (g *HybridGenerator) generateMarkdownToWriter(
 		return err
 	}
 
-	// Append audit section when compliance data is present
-	if target.ComplianceChecks != nil {
+	// Per-subsystem boundary: between report body and audit section (streaming path).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// Append audit section when compliance data is present. Write the
+	// separator and the audit body as two direct writes to w rather than
+	// concatenating a new string first (PERF-M7).
+	if target.ComplianceResults != nil {
 		auditSection := g.builder.BuildAuditSection(target)
 		if auditSection != "" {
-			if _, writeErr := io.WriteString(w, "\n\n"+auditSection); writeErr != nil {
+			if _, writeErr := io.WriteString(w, auditSectionSeparator); writeErr != nil {
+				return fmt.Errorf("failed to write audit section: %w", writeErr)
+			}
+			if _, writeErr := io.WriteString(w, auditSection); writeErr != nil {
 				return fmt.Errorf("failed to write audit section: %w", writeErr)
 			}
 		}
@@ -296,11 +358,73 @@ func (g *HybridGenerator) generateMarkdownToWriter(
 	return nil
 }
 
+// generateMarkdownFallback is the string-based (non-streaming) markdown path,
+// taken when the configured builder does not implement SectionWriter. It
+// composes the report body into a string via the builder and then streams the
+// body + optional audit section to w to avoid += copies (PERF-M7). Extracted
+// from generateMarkdownToWriter to keep the branching there shallow.
+func (g *HybridGenerator) generateMarkdownFallback(
+	ctx context.Context,
+	w io.Writer,
+	target *common.CommonDevice,
+	opts Options,
+) error {
+	g.logger.Debug("Builder does not support SectionWriter, falling back to string generation")
+
+	var output string
+	var err error
+	switch {
+	case opts.Comprehensive:
+		output, err = g.builder.BuildComprehensiveReport(target)
+	default:
+		output, err = g.builder.BuildStandardReport(target)
+	}
+	if err != nil {
+		return err
+	}
+
+	// Per-subsystem boundary: between report body and audit section (fallback path).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	// Append audit section when compliance data is present.
+	if target.ComplianceResults != nil {
+		auditSection := g.builder.BuildAuditSection(target)
+		if auditSection != "" {
+			if _, writeErr := io.WriteString(w, output); writeErr != nil {
+				return fmt.Errorf("failed to write report body: %w", writeErr)
+			}
+			if _, writeErr := io.WriteString(w, auditSectionSeparator); writeErr != nil {
+				return fmt.Errorf("failed to write audit section separator: %w", writeErr)
+			}
+			if _, writeErr := io.WriteString(w, auditSection); writeErr != nil {
+				return fmt.Errorf("failed to write audit section: %w", writeErr)
+			}
+			return nil
+		}
+	}
+
+	if _, writeErr := io.WriteString(w, output); writeErr != nil {
+		return fmt.Errorf("failed to write report body: %w", writeErr)
+	}
+	return nil
+}
+
 // generateJSON generates JSON output by serializing the model.
-func (g *HybridGenerator) generateJSON(data *common.CommonDevice, opts Options) (string, error) {
+//
+// ctx is checked between export preparation and marshaling — the
+// per-subsystem boundary for JSON is coarse because marshaling is a
+// single opaque encoding step.
+func (g *HybridGenerator) generateJSON(ctx context.Context, data *common.CommonDevice, opts Options) (string, error) {
 	g.logger.Debug("Generating JSON output")
 
 	target := prepareForExport(data, opts.Redact)
+
+	// Per-subsystem boundary: between export preparation and marshaling.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 
 	jsonBytes, err := json.MarshalIndent(
 		target,
@@ -316,10 +440,20 @@ func (g *HybridGenerator) generateJSON(data *common.CommonDevice, opts Options) 
 // generateJSONToWriter writes JSON output directly to the writer.
 // Note: JSON marshaling requires the full document, so this doesn't provide
 // the same streaming benefits as markdown generation.
-func (g *HybridGenerator) generateJSONToWriter(w io.Writer, data *common.CommonDevice, opts Options) error {
+func (g *HybridGenerator) generateJSONToWriter(
+	ctx context.Context,
+	w io.Writer,
+	data *common.CommonDevice,
+	opts Options,
+) error {
 	g.logger.Debug("Generating JSON output to writer")
 
 	target := prepareForExport(data, opts.Redact)
+
+	// Per-subsystem boundary: between export preparation and encoding.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
@@ -330,10 +464,17 @@ func (g *HybridGenerator) generateJSONToWriter(w io.Writer, data *common.CommonD
 }
 
 // generateYAML generates YAML output by serializing the model.
-func (g *HybridGenerator) generateYAML(data *common.CommonDevice, opts Options) (string, error) {
+//
+// ctx is checked between export preparation and marshaling.
+func (g *HybridGenerator) generateYAML(ctx context.Context, data *common.CommonDevice, opts Options) (string, error) {
 	g.logger.Debug("Generating YAML output")
 
 	target := prepareForExport(data, opts.Redact)
+
+	// Per-subsystem boundary: between export preparation and marshaling.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 
 	yamlData, err := yaml.Marshal(target)
 	if err != nil {
@@ -345,10 +486,20 @@ func (g *HybridGenerator) generateYAML(data *common.CommonDevice, opts Options) 
 // generateYAMLToWriter writes YAML output directly to the writer.
 // Note: YAML marshaling requires the full document, so this doesn't provide
 // the same streaming benefits as markdown generation.
-func (g *HybridGenerator) generateYAMLToWriter(w io.Writer, data *common.CommonDevice, opts Options) error {
+func (g *HybridGenerator) generateYAMLToWriter(
+	ctx context.Context,
+	w io.Writer,
+	data *common.CommonDevice,
+	opts Options,
+) error {
 	g.logger.Debug("Generating YAML output to writer")
 
 	target := prepareForExport(data, opts.Redact)
+
+	// Per-subsystem boundary: between export preparation and encoding.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	encoder := yaml.NewEncoder(w)
 	encoder.SetIndent(2) //nolint:mnd // Standard YAML indentation
@@ -359,12 +510,24 @@ func (g *HybridGenerator) generateYAMLToWriter(w io.Writer, data *common.CommonD
 }
 
 // generatePlainText generates plain text output by rendering markdown first, then stripping formatting.
-func (g *HybridGenerator) generatePlainText(data *common.CommonDevice, opts Options) (string, error) {
+//
+// ctx is threaded through generateMarkdown; an additional boundary is checked
+// between markdown rendering and formatting stripping.
+func (g *HybridGenerator) generatePlainText(
+	ctx context.Context,
+	data *common.CommonDevice,
+	opts Options,
+) (string, error) {
 	g.logger.Debug("Generating plain text output")
 
-	markdown, err := g.generateMarkdown(data, opts)
+	markdown, err := g.generateMarkdown(ctx, data, opts)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate markdown for plain text conversion: %w", err)
+	}
+
+	// Per-subsystem boundary: between markdown rendering and strip-formatting.
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 
 	return StripMarkdownFormatting(markdown)
@@ -372,13 +535,14 @@ func (g *HybridGenerator) generatePlainText(data *common.CommonDevice, opts Opti
 
 // generatePlainTextToWriter writes plain text output directly to the writer.
 func (g *HybridGenerator) generatePlainTextToWriter(
+	ctx context.Context,
 	w io.Writer,
 	data *common.CommonDevice,
 	opts Options,
 ) error {
 	g.logger.Debug("Generating plain text output to writer")
 
-	output, err := g.generatePlainText(data, opts)
+	output, err := g.generatePlainText(ctx, data, opts)
 	if err != nil {
 		return err
 	}
@@ -388,12 +552,20 @@ func (g *HybridGenerator) generatePlainTextToWriter(
 }
 
 // generateHTML generates HTML output by rendering markdown first, then converting via goldmark.
-func (g *HybridGenerator) generateHTML(data *common.CommonDevice, opts Options) (string, error) {
+//
+// ctx is threaded through generateMarkdown; an additional boundary is checked
+// between markdown rendering and HTML conversion.
+func (g *HybridGenerator) generateHTML(ctx context.Context, data *common.CommonDevice, opts Options) (string, error) {
 	g.logger.Debug("Generating HTML output")
 
-	markdown, err := g.generateMarkdown(data, opts)
+	markdown, err := g.generateMarkdown(ctx, data, opts)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate markdown for HTML conversion: %w", err)
+	}
+
+	// Per-subsystem boundary: between markdown rendering and HTML conversion.
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 
 	return RenderMarkdownToHTML(markdown)
@@ -401,13 +573,14 @@ func (g *HybridGenerator) generateHTML(data *common.CommonDevice, opts Options) 
 
 // generateHTMLToWriter writes HTML output directly to the writer.
 func (g *HybridGenerator) generateHTMLToWriter(
+	ctx context.Context,
 	w io.Writer,
 	data *common.CommonDevice,
 	opts Options,
 ) error {
 	g.logger.Debug("Generating HTML output to writer")
 
-	output, err := g.generateHTML(data, opts)
+	output, err := g.generateHTML(ctx, data, opts)
 	if err != nil {
 		return err
 	}

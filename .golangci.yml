@@ -28,19 +28,27 @@ linters:
     - errcheck
     - errname
     - errorlint
-    # - exhaustive - disabled: we'll come back to this after 1.0
-    # - exhaustruct - disabled: we'll come back to this after 1.0
+    - exhaustive
+    # - exhaustruct - Disabled: the project's idiom for declarative data (compliance
+    #   plugin Control tables, diff/sanitizer rule lists, config validation records)
+    #   is partial struct literals with intentionally zero-valued optional fields.
+    #   Exhaustruct flags 500+ of these as "missing fields" across internal/plugins/,
+    #   internal/diff/, internal/sanitizer/rules.go, internal/config/validation.go,
+    #   and internal/*/example.go. Fighting this would require either hundreds of
+    #   //nolint directives or a brittle struct-name exclude list. Go's zero-value
+    #   guarantee already covers the "forgot to initialize" case exhaustruct is
+    #   designed to catch, so the safety gain does not justify the maintenance cost.
     - exptostd
     - ginkgolinter
     - fatcontext
+    - forbidigo
     - funcorder
-    # - funlen - Disabled: we'll come back to this after 1.0
+    - funlen
     - gocheckcompilerdirectives
     - gochecksumtype
-    # - gocognit - Disabled: we'll come back to this after 1.0
+    - gocognit
     - goconst
     - gocritic
-    # - gocyclo - Disabled in favor of cyclop (see disable section)
     - godot
     - gomoddirectives
     - goprintffuncname
@@ -56,7 +64,7 @@ linters:
     - mnd
     - musttag
     - nakedret
-    # - nestif - Disabled: we'll come back to this after 1.0
+    - nestif
     - nilerr
     - nilnesserr
     - nilnil
@@ -65,7 +73,14 @@ linters:
     - nonamedreturns
     - nosprintfhostport
     - perfsprint
-    # - prealloc # Disabled: this can be premature optimization
+    # - prealloc - Disabled: this can be premature optimization. Probed 2026-04-19:
+    #   12 findings, 8 of which are validator error-collector slices where the common
+    #   case is zero errors (preallocating cap=len(items) would over-allocate).
+    #   The 4 legitimate findings (guaranteed-length transforms in plaintext.go,
+    #   config_test.go, and plugin test helpers) are easier to catch in code review
+    #   than via a lint rule that also recommends the anti-pattern on validators.
+    #   AGENTS.md documents the manual-review expectation. See also: prealloc would
+    #   need an exclusion list per-directory to avoid steering us wrong.
     - predeclared
     - promlinter
     - protogetter
@@ -77,7 +92,10 @@ linters:
     - spancheck
     - sqlclosecheck
     - staticcheck
-    #- tagliatelle # Disabled: currently this is more trouble than it's worth
+    # - tagliatelle - Permanently disabled: the vendor-controlled config.xml schema
+    #   mixes casing conventions (hostname, descr, sourceport, created-time, Phase1).
+    #   Our Go types mirror that reality; enforcing a single case convention fights
+    #   the input format we do not control.
     - testableexamples
     - thelper
     - testifylint
@@ -98,14 +116,121 @@ linters:
       - path: pkg/model/
         linters: [revive]
         text: "var-naming: avoid meaningless package names"
+      # forbidigo is used solely to enforce "no t.Parallel() in cmd/" (see
+      # settings.forbidigo below and GOTCHAS §1.1). Restrict the linter to cmd/
+      # so its single rule does not leak into the rest of the tree. If a future
+      # forbidigo rule needs broader scope, switch to per-rule scoping.
+      - path-except: 'cmd/.*\.go$'
+        linters: [forbidigo]
+      # SA1019 deprecation warnings are expected in these test files — they
+      # exist specifically to exercise the deprecated config.Config flat
+      # fields (Verbose, Debug, Quiet, Theme, Format) until v2.0 removal.
+      # See CHANGELOG Unreleased/Deprecated for removal tracking; the
+      # cmd/config_show.go comment block at line 110 documents the same
+      # backward-compat rationale at the read site.
+      - path: 'internal/config/(config_test|config_coverage_test|validation_test)\.go$'
+        linters: [staticcheck]
+        text: 'SA1019:'
+      # goconst is disabled on _test.go files. Test tables routinely repeat
+      # fixture strings (network labels "wan"/"lan", truthy/falsy keywords
+      # "yes"/"no"/"true", canned IPs like "192.168.1.1", short identifiers
+      # like "test"/"opnsense"/"pfsense"). Extracting each into a constant
+      # hurts test readability — the case row stops being self-describing
+      # because reviewers must jump to the constant block to see what value
+      # is actually being exercised. Same rationale documented for
+      # tagliatelle (vendor schema casing) and exhaustruct (Go zero-value
+      # safety already covers the gap). Production code (.go non-test)
+      # remains subject to goconst.
+      - path: '_test\.go$'
+        linters: [goconst]
+      # goconst also disabled on rule/control tables, validators, and
+      # formatters that intentionally repeat short literal labels in
+      # declarative data — compliance control IDs, sanitizer rule field
+      # patterns, theme color names, validation error tags, NAT/diff
+      # categorization strings. These files are config-as-code where the
+      # literal IS the value being declared; extracting constants adds
+      # indirection without aiding maintenance. Same rationale documented
+      # for tagliatelle (vendor schema casing) and exhaustruct (Go zero-
+      # value safety already covers the gap).
+      - path: 'internal/plugins/(firewall|sans|stig)/.*\.go$'
+        linters: [goconst]
+      - path: 'internal/sanitizer/rules\.go$'
+        linters: [goconst]
+      - path: 'internal/converter/(formatters/.*\.go|builder/builder_nat\.go|registry\.go)$'
+        linters: [goconst]
+      - path: 'internal/validator/(pfsense\.go|validate_system\.go|demo\.go)$'
+        linters: [goconst]
+      - path: 'internal/diff/security/patterns\.go$'
+        linters: [goconst]
+      - path: 'internal/display/theme\.go$'
+        linters: [goconst]
+      - path: 'internal/config/validation\.go$'
+        linters: [goconst]
+      # internal/validator security/network validators contain firewall
+      # rule field-value vocabulary ("any", "pass", "inet", "none",
+      # "track6") that mirrors OPNsense/pfSense XML element values. These
+      # ARE the values being validated; introducing a constant whose
+      # body is the same identifier the validator is matching against
+      # adds indirection without aiding readability.
+      - path: 'internal/validator/validate_(network|security)\.go$'
+        linters: [goconst]
+      # internal/sanitizer/patterns.go contains protocol-keyword detection
+      # patterns ("key", "psk") used inline in regex/keyword tables. The
+      # literal IS the detection target.
+      - path: 'internal/sanitizer/patterns\.go$'
+        linters: [goconst]
+      # internal/diff/analyzer_* per-section files use SecurityImpact
+      # severity strings ("medium") that already have typed constants in
+      # internal/diff (SecurityImpactMedium). The cross-package counter
+      # flags them because goconst counts string-value equality, not
+      # constant references. The typed constants are used; goconst sees
+      # the underlying string literal.
+      - path: 'internal/diff/analyzer_.*\.go$'
+        linters: [goconst]
+      # internal/export/file.go uses "validate_path" 12x as an error/log
+      # field key. Field-key strings stay inline for readability.
+      - path: 'internal/export/file\.go$'
+        linters: [goconst]
+      # internal/converter/markdown.go and internal/display/display.go
+      # contain a small number of remaining inline labels ("Description",
+      # "Name", "custom") used in display/rendering contexts. Same
+      # rationale as builder_* column headers — they're presentation
+      # strings, not API identifiers.
+      - path: 'internal/converter/markdown\.go$'
+        linters: [goconst]
+      - path: 'internal/display/display\.go$'
+        linters: [goconst]
+      # internal/config/config.go uses dotted config path strings
+      # ("export.directory", "logging.level") as map keys. These ARE the
+      # config paths being looked up; a constant whose body is the same
+      # string as its name adds nothing.
+      - path: 'internal/config/config\.go$'
+        linters: [goconst]
+      # cmd/diff.go and cmd/list*.go contain a small set of remaining
+      # inline strings that are either declarative section-filter data
+      # (system/firewall/nat/dns/vpn/certificates in diff) or single-use
+      # subcommand names in list*.go where the only repetitions are in
+      # excluded test files. Carve these out individually to keep the
+      # cmd package goconst-clean.
+      - path: 'cmd/(diff|list|list_devices|list_formats|list_plugins|display)\.go$'
+        linters: [goconst]
   disable:
     - gomodguard # Disabled: maybe someday, but not important right now
-    - gocyclo # Disabled in favor of cyclop
-    - testpackage
+    - gocyclo # Disabled in favor of cyclop (which supersedes it with per-package averages)
+    - testpackage # Disabled: tests live in the same package to exercise unexported helpers
     - gochecknoglobals # Disabled: causes issues with cobra commands
   settings:
     cyclop:
-      max-complexity: 50
+      # 25 (vs. Go default 15). Sweep on 2026-04-19 cleared the baseline
+      # at this threshold after the nestif/gocognit/funlen sweeps
+      # refactored the hot spots. The remaining 6 findings were the
+      # declarative XML dispatch (handleStartElement), flat field-check
+      # chains over the OPNsense DHCPv6 schema (HasDHCPv6Config,
+      # buildDHCPv6Items), and per-field test-equality assertions — each
+      # carries //nolint:cyclop with a scoped reason. Can tighten to 15
+      # once more schema-level dispatches move to reflection-based
+      # dispatch, but that is a larger refactor than this sweep.
+      max-complexity: 25
       package-average: 10.0
     gocritic:
       enabled-tags:
@@ -126,11 +251,22 @@ linters:
 
     embeddedstructfieldcheck:
       forbid-mutex: true
-    tagliatelle:
-      case:
-        overrides:
-          - pkg: pkg/parser/opnsense
-            ignore: true
+
+    goconst:
+      # Skip _test.go files entirely when counting occurrences. Without
+      # this, test-table fixture strings (which we deliberately exclude
+      # from the linter under exclusions.rules) still inflate the
+      # occurrence count and force production code that happens to share
+      # a literal with a test fixture to introduce an unnecessary
+      # constant. The exclusion-by-path-and-counting-by-everything dual
+      # behavior was the root cause of the 2026-05-21 sweep needing 17+
+      # extra production constants for "list" / "devices" / "formats"
+      # strings that each appear exactly once in production code but 3+
+      # times in their test files.
+      ignore-tests: true
+      # Default min-occurrences is 3. Keep the default; we want goconst
+      # to catch genuinely repeated production-code strings.
+      min-occurrences: 3
 
     errcheck:
       check-type-assertions: true
@@ -143,38 +279,45 @@ linters:
       check:
         - switch
         - map
-    exhaustruct:
-      exclude:
-        - ^net/http.Client$
-        - ^net/http.Cookie$
-        - ^net/http.Request$
-        - ^net/http.Response$
-        - ^net/http.Server$
-        - ^net/http.Transport$
-        - ^net/url.URL$
-        - ^os/exec.Cmd$
-        - ^reflect.StructField$
-        - ^github.com/Shopify/sarama.Config$
-        - ^github.com/Shopify/sarama.ProducerMessage$
-        - ^github.com/mitchellh/mapstructure.DecoderConfig$
-        - ^github.com/prometheus/client_golang/.+Opts$
-        - ^github.com/spf13/cobra.Command$
-        - ^github.com/spf13/cobra.CompletionOptions$
-        - ^github.com/stretchr/testify/mock.Mock$
-        - ^github.com/testcontainers/testcontainers-go.+Request$
-        - ^github.com/testcontainers/testcontainers-go.FromDockerfile$
-        - ^golang.org/x/tools/go/analysis.Analyzer$
-        - ^google.golang.org/protobuf/.+Options$
-        - ^gopkg.in/yaml.v3.Node$
+      # Any switch with a default: branch is treated as exhaustive. This
+      # matches the project's convention where partial switches on large
+      # enum-style types (e.g., reflect.Kind) include an explicit default
+      # that documents "no-op for kinds not listed" rather than listing
+      # every kind just to satisfy the linter.
+      default-signifies-exhaustive: true
+    forbidigo:
+      # Type-aware matching so we catch t.Parallel() regardless of the local
+      # variable name (t, tt, tc, etc.).
+      analyze-types: true
+      forbid:
+        # GOTCHAS §1.1: the cmd package uses package-level CLI flag globals
+        # (sharedDeviceType, sharedAuditMode, outputFile, format, force, ...).
+        # Any test that calls t.Parallel() risks a data race with sibling
+        # tests that mutate those globals. The race detector reports collateral
+        # races in unrelated utilities, so the policy is a blanket ban in cmd/.
+        # Scope is enforced by the path-except rule under linters.exclusions.
+        - pattern: '^testing\.T\.Parallel$'
+          msg: 'cmd/ tests must not call t.Parallel(): cmd uses package-level CLI flag globals that race under parallel execution. See GOTCHAS §1.1.'
     funcorder:
       struct-method: false
     funlen:
-      lines: 60
-      statements: 40
+      # 120/80 (vs. default 60/40). Sweep on 2026-04-19 cleared the baseline
+      # at these thresholds. Production code with genuine branching was
+      # refactored into helpers; test table declarations and declarative
+      # data tables (compliance.Control lists, sanitizer rule lists) carry
+      # //nolint:funlen with a reason. Can tighten to 80/50 in a follow-up
+      # once more test data is extracted to fixture files.
+      lines: 120
+      statements: 80
     gochecksumtype:
       default-signifies-exhaustive: false
     gocognit:
-      min-complexity: 30
+      # 40 (vs. Go default 15, skill-recommended 30). Sweep on 2026-04-19
+      # cleared the baseline at this threshold. Can tighten to 30 in a
+      # follow-up once more of the hot spots (validators, walker, test
+      # helpers) have settled; dropping in one step would re-open several
+      # of the same files this sweep just refactored.
+      min-complexity: 40
 
     gosec:
       excludes:
@@ -187,6 +330,13 @@ linters:
         - shadow # Disabled temporarily to focus on other issues first
     inamedparam:
       skip-single-param: true
+
+    nestif:
+      # 8 (vs. Go default 5). Complements cyclop + gocognit from the
+      # deep-nesting angle — catches "pyramid of doom" patterns that
+      # branching counts alone do not flag. Sweep on 2026-04-19 cleared
+      # the baseline; any re-add of a 9+-nested block will fail CI.
+      min-complexity: 8
 
     mnd:
       ignored-functions:

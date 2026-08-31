@@ -1,0 +1,13 @@
+# Architecture Decision Records
+
+This directory records architectural decisions and verified findings that shape opnDossier. Each ADR is a short, durable note: the context, the decision (or the verified reality we depend on), the alternatives weighed, and the consequences.
+
+See [`docs/adr/template.md`](https://github.com/EvilBit-Labs/opnDossier/blob/main/docs/adr/template.md) in the repository for the blank format.
+
+| ADR                                                         | Title                                                                      | Status            | Date       |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------- | ----------------- | ---------- |
+| [0001](0001-opnsense-pfsense-snmp-config-storage-model.md)  | SNMP configuration storage model in OPNsense and pfSense                   | accepted          | 2026-06-27 |
+| [0002](0002-named-object-reference-layer.md)                | Named-object reference layer in CommonDevice                               | accepted (scoped) | 2026-07-18 |
+| [0003](0003-fortigate-first-parser-defer-generic-engine.md) | FortiGate-first parser; defer the generic text-config engine               | accepted          | 2026-07-18 |
+| [0004](0004-unified-shadow-detection-engine.md)             | Unified firewall shadow-detection engine with deadRules compatibility view | accepted          | 2026-07-19 |
+| [0005](0005-analysis-pf-evaluation-semantics.md)            | Firewall analysis models pf rule-evaluation semantics directly             | accepted          | 2026-07-19 |
